@@ -8172,6 +8172,9 @@ PRE(mach_msg_bootstrap)
    case 404:
       CALL_PRE(bootstrap_look_up);
       return;
+   case 0x10000000:
+      // TODO: finish
+      return;
 
    default:
       PRINT("UNHANDLED bootstrap message [id %d, to %s, reply 0x%x]\n",
