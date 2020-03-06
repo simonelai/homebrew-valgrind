@@ -83,6 +83,10 @@ jobs:
       run: ./vg-in-place ls -l
     - name: build regression tests
       run: make check
+    - name: more debug
+      run: ./vg-in-place -q --track-origins=yes memcheck/tests/atomic_incs
+    - name: fails
+      run: false
     - name: create artifacts folder
       run: mkdir -p ${{ env.TEST_FOLDER }}/outputs
     - name: regression tests
