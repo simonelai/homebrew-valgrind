@@ -52,7 +52,6 @@ brew install --HEAD https://raw.githubusercontent.com/LouisBrunner/valgrind-maco
 ## TODO
 
  - Get historical build data from sourceforge for macOS 10.13
- - pthread and signals blocking (re-enable tests) [patch in progess]
  - wqthread broken (see #4) [patch in progress]
  - drd thread related crash on 10.15
  - `-UNHANDLED` messages
