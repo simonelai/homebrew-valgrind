@@ -99,6 +99,16 @@ memcheck/tests/linux/sys-preadv2_pwritev2 (stderr)
 OUTDATED
 ```
 
+Blocking:
+<!-- memcheck/tests/addressable -->
+none/tests/darwin/bug228343
+<!-- none/tests/syscall-restart2 -->
+
+Used to pass:
+<!-- memcheck/tests/sigaltstack -->
+<!-- none/tests/coolo_sigaction -->
+none/tests/pth_self_kill_15_other
+
 ### macOS (10.15.1)
 
 ```

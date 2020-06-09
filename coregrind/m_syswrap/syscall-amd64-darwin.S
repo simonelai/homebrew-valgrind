@@ -75,21 +75,6 @@
 /* from vki_arch.h */	
 #define VKI_SIG_SETMASK	3
 
-/* from syscall-adm64-linux.S */
-#define PUSH_di_si_dx_cx_8 \
-	pushq	%rdi ; \
-	pushq	%rsi ; \
-	pushq	%rdx ; \
-	pushq	%rcx ; \
-	pushq	%r8 ; \
-
-#define	POP_di_si_dx_cx_8 \
-	popq	%r8 ; \
-	popq	%rcx ; \
-	popq	%rdx ; \
-	popq	%rsi ; \
-	popq	%rdi ; \
-
 /* DO_SYSCALL MACH|MDEP|UNIX */
 #define MACH 1
 #define MDEP 2
@@ -112,16 +97,14 @@ L_$0_1:	/* Even though we can't take a signal until the sigprocmask completes,
 	   If rip is in the range [1,2), the syscall hasn't been started yet */
 
 	/* Set the signal mask which should be current during the syscall. */
-  PUSH_di_si_dx_cx_8
 	movq	$__NR___pthread_sigmask, %rax	/* syscall */
 	movq	$$VKI_SIG_SETMASK, %rdi /* how */
 	movq	%rdx, %rsi /* sysmask */
 	movq	%rcx, %rdx /* postmask */
 	syscall
-  POP_di_si_dx_cx_8
 
 	testq	%rax, %rax
-  jc  L_$0_7  /* __pthread_sigmask failed */
+	jnz  L_$0_7  /* __pthread_sigmask failed */
 	
 	/* OK, that worked.  Now do the syscall proper. */
 
@@ -173,16 +156,14 @@ L_$0_3:	/* In the range [3, 4), the syscall result is in %rax,
 
 L_$0_4:	/* Re-block signals.  If eip is in [4,5), then the syscall 
 	   is complete and we needn't worry about it. */
-	PUSH_di_si_dx_cx_8
 	movq	$__NR___pthread_sigmask, %rax	/* syscall */
 	movq	$$VKI_SIG_SETMASK, %rdi /* how */
-	movq	%rcx, %rsi /* postmask */
+	movq	-32(%rbp), %rsi /* postmask */
 	xorq	%rdx, %rdx /* NULL */
 	syscall
-	POP_di_si_dx_cx_8
 
 	testq	%rax, %rax
-  js  L_$0_7  /* __pthread_sigmask failed */
+	jnz  L_$0_7  /* __pthread_sigmask failed */
 
 L_$0_5:	/* now safe from signals */
 	movq	$$0, %rax	/* SUCCESS */
@@ -190,7 +171,7 @@ L_$0_5:	/* now safe from signals */
 	popq	%rbp
 	ret
 
-L_$0_7:	/* failure:	 return 0x8000 | error code */
+L_$0_7:	// failure:	 return 0x8000 | error code
   andq    $$0x7FFF, %rax
   orq     $$0x8000, %rax
 	movq	%rbp, %rsp

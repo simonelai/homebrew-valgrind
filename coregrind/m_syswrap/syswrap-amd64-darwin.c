@@ -449,7 +449,7 @@ void wqthread_hijack(Addr self, Addr kport, Addr stackaddr, Addr workitem,
       lock. */
    VG_(acquire_BigLock_LL)("wqthread_hijack");
 
-   if (0) VG_(printf)(
+   if (1) VG_(printf)(
              "wqthread_hijack: self %#lx, kport %#lx, "
 	     "stackaddr %#lx, workitem %#lx, reuse/flags %x, sp %#lx\n", 
 	     self, kport, stackaddr, workitem, (UInt)reuse, sp);
@@ -505,7 +505,7 @@ void wqthread_hijack(Addr self, Addr kport, Addr stackaddr, Addr workitem,
 
        tst = VG_(get_ThreadState)(tid);
 
-       if (0) VG_(printf)("wqthread_hijack reuse %s: tid %u, tst %p, "
+       if (1) VG_(printf)("wqthread_hijack reuse %s: tid %u, tst %p, "
                           "tst->os_state.pthread %#lx, self %#lx\n",
                           tst->os_state.pthread == self ? "SAME" : "DIFF",
                           tid, (void *)tst, tst->os_state.pthread, self);

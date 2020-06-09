@@ -2167,6 +2167,7 @@ static const HChar *workqop_name(int op)
    case VKI_WQOPS_SET_EVENT_MANAGER_PRIORITY: return "SET_EVENT_MANAGER_PRIORITY";
    case VKI_WQOPS_THREAD_WORKLOOP_RETURN:     return "THREAD_WORKLOOP_RETURN";
    case VKI_WQOPS_SHOULD_NARROW:              return "SHOULD_NARROW";
+   case VKI_WQOPS_SETUP_DISPATCH:             return "SETUP_DISPATCH";
    default: return "?";
    }
 }
@@ -2185,6 +2186,7 @@ PRE(workq_ops)
       // GrP fixme need anything here?
       // GrP fixme may block?
       break;
+   case VKI_WQOPS_THREAD_KEVENT_RETURN:
    case VKI_WQOPS_THREAD_RETURN: {
       // The interesting case. The kernel will do one of two things:
       // 1. Return normally. We continue; libc proceeds to stop the thread.
@@ -2214,10 +2216,6 @@ PRE(workq_ops)
       // JRS uh, looks like it queues up a bunch of threads, or some such?
       *flags |= SfMayBlock; // the kernel sources take a spinlock, so play safe
       break;
-   case VKI_WQOPS_THREAD_KEVENT_RETURN:
-      // RK fixme need anything here?
-      // perhaps similar to VKI_WQOPS_THREAD_RETURN above?
-      break;
    case VKI_WQOPS_SET_EVENT_MANAGER_PRIORITY:
       // RK fixme this just sets scheduling priorities - don't think we need
       // to do anything here
@@ -2225,10 +2223,30 @@ PRE(workq_ops)
    case VKI_WQOPS_THREAD_WORKLOOP_RETURN:
    case VKI_WQOPS_SHOULD_NARROW:
       // RK fixme need anything here?
-      // RK fixme may block?
+      *flags |= SfMayBlock;
       break;
+#if DARWIN_VERS >= DARWIN_10_15
+   case VKI_WQOPS_SETUP_DISPATCH: {
+#pragma pack(4)
+      struct workq_dispatch_config {
+        uint32_t wdc_version;
+        uint32_t wdc_flags;
+        uint64_t wdc_queue_serialno_offs;
+        uint64_t wdc_queue_label_offs;
+      };
+#pragma pack()
+      PRE_MEM_READ("workq_ops(item)", ARG2, MIN(sizeof(struct workq_dispatch_config), SARG3));
+      struct workq_dispatch_config* cfg = (struct workq_dispatch_config*)ARG2;
+      if (cfg->wdc_flags & ~VKI_WORKQ_DISPATCH_SUPPORTED_FLAGS ||
+          cfg->wdc_version < VKI_WORKQ_DISPATCH_MIN_SUPPORTED_VERSION) {
+        SET_STATUS_Failure( VKI_ENOTSUP );
+      }
+      break;
+   }
+#endif
    default:
-      VG_(printf)("UNKNOWN workq_ops option %ld\n", ARG1);
+      PRINT("workq_ops ( %lu [??], ... )", ARG1);
+      log_decaying("UNKNOWN workq_ops option %lu!", ARG1);
       break;
    }
 }
