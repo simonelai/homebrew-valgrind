@@ -8486,6 +8486,35 @@ static int is_task_port(mach_port_t port)
    mach_msg: base handlers
    ------------------------------------------------------------------ */
 
+void DumpHex(const void* data, size_t size) {
+	char ascii[17];
+	size_t i, j;
+	ascii[16] = '\0';
+	for (i = 0; i < size; ++i) {
+		PRINT("%02X ", ((unsigned char*)data)[i]);
+		if (((unsigned char*)data)[i] >= ' ' && ((unsigned char*)data)[i] <= '~') {
+			ascii[i % 16] = ((unsigned char*)data)[i];
+		} else {
+			ascii[i % 16] = '.';
+		}
+		if ((i+1) % 8 == 0 || i+1 == size) {
+			PRINT(" ");
+			if ((i+1) % 16 == 0) {
+				PRINT("|  %s \n", ascii);
+			} else if (i+1 == size) {
+				ascii[(i+1) % 16] = '\0';
+				if ((i+1) % 16 <= 8) {
+					PRINT(" ");
+				}
+				for (j = (i+1) % 16; j < 16; ++j) {
+					PRINT("   ");
+				}
+				PRINT("|  %s \n", ascii);
+			}
+		}
+	}
+}
+
 PRE(mach_msg)
 {
    mach_msg_header_t *mh = (mach_msg_header_t *)ARG1;
@@ -8495,9 +8524,9 @@ PRE(mach_msg)
    // mach_port_t rcv_name = (mach_port_t)ARG5;
    size_t complex_header_size = 0;
 
-  //  PRINT("mach_msg"
-  //    "(msg: %#lx, option:%#lx, send_size:%ld, rcv_size:%ld, rcv_name:%s, timeout:%ld, notify:%s)",
-  //    ARG1, ARG2, ARG3, ARG4, name_for_port(ARG5), ARG6, name_for_port(ARG7));
+   PRINT("mach_msg"
+     "(msg: %#lx, option:%#lx, send_size:%ld, rcv_size:%ld, rcv_name:%s, timeout:%ld, notify:%s)",
+     ARG1, ARG2, ARG3, ARG4, name_for_port(ARG5), ARG6, name_for_port(ARG7));
    PRE_REG_READ7(long, "mach_msg",
                  mach_msg_header_t*,"msg", mach_msg_option_t,"option",
                  mach_msg_size_t,"send_size", mach_msg_size_t,"rcv_size",
@@ -8533,17 +8562,22 @@ PRE(mach_msg)
       // JRS 11 Nov 2014: this assertion is OK for <= 10.9 but fails on 10.10
 #     if DARWIN_VERS >= DARWIN_10_10
       if (mh->msgh_bits & MACH_SEND_TRAILER) {
-        log_decaying("UNKNOWN mach_msg unhandled MACH_SEND_TRAILER option");
-      //   mach_msg_trailer_t* trailer = (mach_msg_trailer_t*)(ARG1 + send_size);
+        PRINT("\n");
+        PRINT("%p\n", mh);
+        DumpHex(mh, rcv_size);
+        PRINT("%p\n", mh+send_size);
+        DumpHex(mh+send_size, send_size);
+        mach_msg_trailer_t* mt = (mach_msg_trailer_t*)((uint8_t*)mh + round_msg(send_size));
 
-      //   PRE_FIELD_READ("mach_msg(trailer->msgh_trailer_type)", trailer->msgh_trailer_type);
-      //   PRE_FIELD_READ("mach_msg(trailer->msgh_trailer_size)", trailer->msgh_trailer_size);
-      //   PRE_MEM_READ("mach_msg(trailer)", (Addr)trailer, trailer->msgh_trailer_size);
+        PRE_MEM_READ("mach_msg(trailer->msgh_trailer_type)", (Addr)&mt->msgh_trailer_type, sizeof(mt->msgh_trailer_type));
+        // PRE_FIELD_READ("mach_msg(trailer->msgh_trailer_type)", trailer->msgh_trailer_type);
+        // PRE_FIELD_READ("mach_msg(trailer->msgh_trailer_size)", trailer->msgh_trailer_size);
+        // PRE_MEM_READ("mach_msg(trailer)", (Addr)trailer, trailer->msgh_trailer_size);
 
-      //   if (trailer->msgh_trailer_size > 0) {
-      //     // Only one format is supported at the moment
-      //     vg_assert(trailer->msgh_trailer_type == MACH_MSG_TRAILER_FORMAT_0);
-      //   }
+        // if (trailer->msgh_trailer_size > 0) {
+        //   // Only one format is supported at the moment
+        //   vg_assert(trailer->msgh_trailer_type == MACH_MSG_TRAILER_FORMAT_0);
+        // }
 
 #if 0
         int trailer_type = GET_RCV_ELEMENTS(option);
@@ -8552,21 +8586,21 @@ PRE(mach_msg)
         } else {
           switch (trailer_type) {
             case MACH_RCV_TRAILER_NULL: {
-              // vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_trailer_t));
+              vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_trailer_t));
               // Nothing more to check
               PRINT("mach_msg(trailer)");
               break;
             }
 
             case MACH_RCV_TRAILER_SEQNO: {
-              // vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_seqno_trailer_t));
+              vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_seqno_trailer_t));
               mach_msg_seqno_trailer_t* real_trailer = (mach_msg_seqno_trailer_t*)trailer;
               PRINT("mach_msg(seqno_trailer) [seqno %d]", real_trailer->msgh_seqno);
               break;
             }
 
             case MACH_RCV_TRAILER_SENDER: {
-              // vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_security_trailer_t));
+              vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_security_trailer_t));
               mach_msg_security_trailer_t* real_trailer = (mach_msg_security_trailer_t*)trailer;
               PRINT("mach_msg(security_trailer) [seqno %d, sender %#xd%xd]",
                 real_trailer->msgh_seqno,
@@ -8575,7 +8609,7 @@ PRE(mach_msg)
             }
 
             case MACH_RCV_TRAILER_AUDIT: {
-              // vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_audit_trailer_t));
+              vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_audit_trailer_t));
               mach_msg_audit_trailer_t* real_trailer = (mach_msg_audit_trailer_t*)trailer;
               PRINT("mach_msg(audit_trailer) [seqno %d, sender %#x%x, audit %#x%x%x%x%x%x%x%x]",
                 real_trailer->msgh_seqno,
@@ -8588,7 +8622,7 @@ PRE(mach_msg)
             }
 
             case MACH_RCV_TRAILER_CTX: {
-              // vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_context_trailer_t));
+              vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_context_trailer_t));
               mach_msg_context_trailer_t* real_trailer = (mach_msg_context_trailer_t*)trailer;
               PRINT("mach_msg(context_trailer) [seqno %d, sender %#x%x, audit %#x%x%x%x%x%x%x%x, context: %llx]",
                 real_trailer->msgh_seqno,
@@ -8602,7 +8636,7 @@ PRE(mach_msg)
             }
 
             case MACH_RCV_TRAILER_AV: {
-              // vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_mac_trailer_t));
+              vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_mac_trailer_t));
               mach_msg_mac_trailer_t* real_trailer = (mach_msg_mac_trailer_t*)trailer;
               PRINT("mach_msg(av_trailer) [seqno %d, sender %#x%x, audit %#x%x%x%x%x%x%x%x, context: %llx, ad: %d, sender: %s]",
                 real_trailer->msgh_seqno,
@@ -8617,7 +8651,7 @@ PRE(mach_msg)
             }
 
             case MACH_RCV_TRAILER_LABELS: {
-              // vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_mac_trailer_t));
+              vg_assert(trailer->msgh_trailer_size == sizeof(mach_msg_mac_trailer_t));
               mach_msg_mac_trailer_t* real_trailer = (mach_msg_mac_trailer_t*)trailer;
               PRINT("mach_msg(labels_trailer) [seqno %d, sender %#x%x, audit %#x%x%x%x%x%x%x%x, context: %llx, ad: %d, sender: %s]",
                 real_trailer->msgh_seqno,
@@ -8633,7 +8667,6 @@ PRE(mach_msg)
 
             default:
               log_decaying("UNKNOWN mach_msg_trailer_t [type %d]", trailer_type);
-            }
           }
         }
 #endif
