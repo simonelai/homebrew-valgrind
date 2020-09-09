@@ -4,12 +4,11 @@ This repository contains a version of Valgrind including a few patches to improv
 
 ## Status
 
-Valgrind now builds and works on every macOS version
+Valgrind now builds and works on every macOS version.
 
 Note that some features are still in progress:
 
  - crash when using wqthread (used in certain UI frameworks)
- - using threads and signals is undefined
 
 It is currently tested on 10.14.6 and 10.15.4.
 
@@ -19,17 +18,13 @@ Checkout the [`patches`](https://github.com/LouisBrunner/valgrind-macos/commits/
 
 In case you already have Valgrind installed, you might need to `brew remove` it first.
 
-In order to use this version, first tap this repository:
+In order to use this version of `valgrind`, use the following commands:
 ```sh
 brew tap LouisBrunner/valgrind
-```
-
-Then, install `valgrind`:
-```sh
 brew install --HEAD LouisBrunner/valgrind/valgrind
 ```
 
-You can now use `valgrind` as normal.
+You can now use `valgrind` as normal, including `brew upgrade`, etc.
 
 Note: in case of failures during the build, [make sure you have the latest Xcode/CLI tools installed](https://github.com/LouisBrunner/valgrind-macos/issues/6#issuecomment-667587385).
 
@@ -49,21 +44,19 @@ If you don't want to use `tap`, you can also install the formula directly, but n
 brew install --HEAD https://raw.githubusercontent.com/LouisBrunner/valgrind-macos/master/valgrind.rb
 ```
 
-## TODO
+Note that you might need to uninstall the upstream version of `valgrind` first (`brew remove valgrind`).
 
- - Get historical build data from sourceforge for macOS 10.13
- - pthread and signals blocking (re-enable tests) [patch in progess]
- - wqthread broken (see #4) [patch in progress]
- - drd thread related crash on 10.15
- - `-UNHANDLED` messages
- - Run regtest in parallel [patch in progess]
+### Deprecated method
+
+You can directly refer to the formula in this repository using:
+
+```
+brew install --HEAD https://raw.githubusercontent.com/LouisBrunner/valgrind-macos/master/valgrind.rb
+```
+
+However, do note that it might conflict with an existing version of `valgrind` and that it will break after a `brew upgrade`.
 
 ## Tests
-
-Some tests are blocking and were therefore disabled on macOS:
-
- - `none/tests/pselect_alarm`
- - `none/tests/pth_term_signal`
 
 ### Linux (Ubuntu 18.04)
 
@@ -105,6 +98,16 @@ memcheck/tests/linux/sys-preadv2_pwritev2 (stderr)
 ```
 OUTDATED
 ```
+
+Blocking:
+<!-- memcheck/tests/addressable -->
+none/tests/darwin/bug228343
+<!-- none/tests/syscall-restart2 -->
+
+Used to pass:
+<!-- memcheck/tests/sigaltstack -->
+<!-- none/tests/coolo_sigaction -->
+none/tests/pth_self_kill_15_other
 
 ### macOS (10.15.1)
 
@@ -408,6 +411,7 @@ none/tests/pth_cancel2                   (stderr)
 none/tests/require-text-symbol-2         (stderr)
 none/tests/rlimit_nofile                 (stderr)
 none/tests/scripts/shell                 (stderr)
+none/tests/sem                           (stderr) // non-deterministic
 none/tests/syscall-restart1              (stderr)
 none/tests/syslog                        (stderr)
 ```
