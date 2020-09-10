@@ -2187,6 +2187,7 @@ PRE(workq_ops)
       // GrP fixme may block?
       break;
    case VKI_WQOPS_THREAD_KEVENT_RETURN:
+   case VKI_WQOPS_THREAD_WORKLOOP_RETURN:
    case VKI_WQOPS_THREAD_RETURN: {
       // The interesting case. The kernel will do one of two things:
       // 1. Return normally. We continue; libc proceeds to stop the thread.
@@ -2220,10 +2221,9 @@ PRE(workq_ops)
       // RK fixme this just sets scheduling priorities - don't think we need
       // to do anything here
       break;
-   case VKI_WQOPS_THREAD_WORKLOOP_RETURN:
    case VKI_WQOPS_SHOULD_NARROW:
       // RK fixme need anything here?
-      *flags |= SfMayBlock;
+      // RK fixme may block?
       break;
 #if DARWIN_VERS >= DARWIN_10_15
    case VKI_WQOPS_SETUP_DISPATCH: {
