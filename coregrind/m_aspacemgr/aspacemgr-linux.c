@@ -1001,7 +1001,7 @@ Bool VG_(am_do_sync_check) ( const HChar* fn,
                              const HChar* file, Int line )
 {
    sync_check_ok = True;
-   if (0)
+   if (1)
       VG_(debugLog)(0,"aspacem", "do_sync_check %s:%d\n", file,line);
    parse_procselfmaps( sync_check_mapping_callback,
                        sync_check_gap_callback );
@@ -1539,8 +1539,9 @@ static void read_maps_callback ( Addr addr, SizeT len, UInt prot,
 
 #  if defined(VGO_darwin)
    // GrP fixme no dev/ino on darwin
-   if (offset != 0) 
+   if (offset != 0 || addr == 0x0258000000) {
       seg.kind = SkFileV;
+   }
 #  endif // defined(VGO_darwin)
 
 #  if defined(VGP_arm_linux)
@@ -1560,7 +1561,7 @@ static void read_maps_callback ( Addr addr, SizeT len, UInt prot,
    if (filename)
       seg.fnIdx = ML_(am_allocate_segname)( filename );
 
-   if (0) show_nsegment( 2,0, &seg );
+   if (1) show_nsegment( 2,0, &seg );
    add_segment( &seg );
 }
 
@@ -3594,8 +3595,12 @@ static void parse_procselfmaps (
          stats_machcalls++;
          kr = mach_vm_region_recurse(mach_task_self(), &addr, &size, &depth,
                                      (vm_region_info_t)&info, &info_count);
-         if (kr) 
+         if (kr) {
+            VG_(debugLog)(0, "aspacem",
+              "error while reading map with addr=%#llx depth=%d: %d\n",
+              addr, depth, kr);
             return;
+         }
          if (info.is_submap) {
             depth++;
             continue;
@@ -3773,7 +3778,7 @@ Bool VG_(get_changed_segments)(
    static UInt stats_synccalls = 1;
    aspacem_assert(when && where);
 
-   if (0)
+   if (1)
       VG_(debugLog)(0,"aspacem",
          "[%u,%u] VG_(get_changed_segments)(%s, %s)\n",
          stats_synccalls++, stats_machcalls, when, where

@@ -2,6 +2,9 @@
 
 This repository contains a version of Valgrind including a few patches to improve support for the macOS platform. It is maintained by [Louis Brunner](https://github.com/LouisBrunner).
 
+TODO:
+ - wqthread EBUSY in workq_return ???
+
 ## Status
 
 Valgrind now builds and works on every macOS version

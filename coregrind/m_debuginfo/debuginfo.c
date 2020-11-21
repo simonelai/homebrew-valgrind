@@ -1086,6 +1086,7 @@ ULong VG_(di_notify_mmap)( Addr a, Bool allow_SkFileV, Int use_fd )
                 seg->start, seg->end, 
                 seg->hasR ? 'r' : '-',
                 seg->hasW ? 'w' : '-',seg->hasX ? 'x' : '-' );
+      VG_(dmsg)("di_notify_mmap-1.1: %d\n", seg->fnIdx);
    }
 
    /* guaranteed by aspacemgr-linux.c, sane_NSegment() */
