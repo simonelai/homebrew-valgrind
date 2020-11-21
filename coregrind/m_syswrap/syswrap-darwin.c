@@ -81,6 +81,9 @@ static mach_port_t vg_host_port = 0;
 static mach_port_t vg_task_port = 0;
 static mach_port_t vg_bootstrap_port = 0;
 
+// Saved dyld cache
+static void* vg_shared_dyld_cache = 0;
+
 // Run a thread from beginning to end and return the thread's
 // scheduler-return-code.
 static VgSchedReturnCode thread_wrapper(Word /*ThreadId*/ tidW)
@@ -3031,6 +3034,20 @@ PRE(stat64)
 POST(stat64)
 {
    POST_MEM_WRITE( ARG2, sizeof(struct vki_stat64) );
+
+#if DARWIN_VERS >= DARWIN_11_00
+   // Starting with macOS 11.0, some system libraries are not provided on the disk but only though
+   // shared dyld cache, thus we try to detect if we tried (and failed) to load a dylib, in which case
+   // we do the same thing as dyld and load the info from the cache directly
+   if (RES == 2) {
+     int len = VG_(strlen)(dir);
+    //  // TODO: invalid, take a more granular to allow better dylib mapping too
+    //  ML_(notify_core_and_tool_of_mmap)(
+    //    shared_region, VG_PGROUNDUP(0x0FFE00000ULL),
+    //    VKI_PROT_WRITE | VKI_PROT_EXEC, VKI_MAP_SHARED, -1, 0);
+    //  // TODO: arm64: 0x100000000ULL
+   }
+#endif
 }
 
 PRE(lstat64)
@@ -10772,11 +10789,7 @@ POST(shared_region_check_np)
     POST_MEM_WRITE(ARG1, sizeof(uint64_t));
     uint64_t shared_region = *((uint64_t*) ARG1);
     PRINT("shared dyld cache %#llx", shared_region);
-    // TODO: invalid, take a more granular to allow better dylib mapping too
-    ML_(notify_core_and_tool_of_mmap)(
-      shared_region, VG_PGROUNDUP(0x0FFE00000ULL),
-      VKI_PROT_WRITE | VKI_PROT_EXEC, VKI_MAP_SHARED, -1, 0);
-    // TODO: arm64: 0x100000000ULL
+    vg_shared_dyld_cache = (void*) shared_region;
   }
 }
 
