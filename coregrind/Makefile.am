@@ -165,7 +165,7 @@ endif
 
 # Be careful w.r.t. parallel builds.  See section 27.9 of the automake info
 # page, "Handling Tools that Produce many Outputs".
-$(abs_builddir)/m_mach: 
+$(abs_builddir)/m_mach:
 	mkdir -p $@
 $(mach_user_srcs): $(mach_defs) $(abs_builddir)/m_mach
 	(cd m_mach && mig -I@XCODE_INC_DIR@ $(mach_defs))
@@ -409,6 +409,7 @@ COREGRIND_SOURCES_COMMON = \
 	m_mach/mach_traps-x86-darwin.S \
 	m_mach/mach_traps-amd64-darwin.S \
 	m_mach/mig_strncpy.c \
+	m_mach/dyld_cache.c \
 	m_replacemalloc/replacemalloc_core.c \
 	m_scheduler/sched-lock.c \
 	m_scheduler/sched-lock-generic.c \

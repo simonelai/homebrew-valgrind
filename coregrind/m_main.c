@@ -642,7 +642,7 @@ static void process_option (Clo_Mode mode,
    else if VG_BOOL_CLOM(cloPD, arg, "--trace-redir",      VG_(clo_trace_redir)) {}
 
    else if VG_BOOL_CLOM(cloPD, arg, "--trace-syscalls",   VG_(clo_trace_syscalls)) {}
-   else if VG_BOOL_CLOM(cloE, arg, "--wait-for-gdb",     VG_(clo_wait_for_gdb)) { 
+   else if VG_BOOL_CLOM(cloE, arg, "--wait-for-gdb",     VG_(clo_wait_for_gdb)) {
       //--------------------------------------------------------------
       // Allow GDB attach
       //   p: logging
@@ -1861,6 +1861,15 @@ Int valgrind_main ( Int argc, HChar **argv, HChar **envp )
    }
 
    VG_(init_Threads)();
+
+   //--------------------------------------------------------------
+   // Initialize the dyld cache, which is required with macOS 11 (Big Sur) and onwards
+   // as some system libraries aren't provided on the disk anymore
+   //   p: none
+   //--------------------------------------------------------------
+#  if defined(VGO_darwin) && DARWIN_VERS >= DARWIN_11_00
+   VG_(dyld_cache_init)();
+#  endif
 
    //--------------------------------------------------------------
    // Initialise the scheduler (phase 1) [generates tid_main]

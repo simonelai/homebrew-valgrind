@@ -32,12 +32,21 @@
 #define __PUB_CORE_MACH_H
 
 //--------------------------------------------------------------------
-// PURPOSE: This module contains the Mach kernel interface, 
+// PURPOSE: This module contains the Mach kernel interface,
 // for operating systems like Darwin / Mac OS X that use it.
 //--------------------------------------------------------------------
 
 // Call this early in Valgrind's main(). It depends on nothing.
 extern void VG_(mach_init)(void);
+
+#if DARWIN_VERS >= DARWIN_11_00
+// Component replicating dyld shared cache checking
+// as system libraries are not provided on disk
+// starting with macOS 11.0 (Big Sur)
+extern void VG_(dyld_cache_init)(void);
+extern int VG_(dyld_cache_might_be_in)(const HChar*);
+extern int VG_(dyld_cache_check_and_register)(const HChar*);
+#endif
 
 #endif // __PUB_CORE_MACH_H
 
