@@ -26,7 +26,7 @@
    The GNU General Public License is contained in the file COPYING.
 */
 
-#if defined(VGO_darwin) 
+#if defined(VGO_darwin)
 
 #include "pub_core_basics.h"
 #include "pub_core_mach.h"
@@ -56,7 +56,7 @@ mach_port_t mig_get_reply_port(void)
     if (!reply) reply = mach_reply_port();
     return reply;
     // GrP fixme is just one enough for valgrind's own use?
-    // might work if valgrind never blocks in mig calls on 
+    // might work if valgrind never blocks in mig calls on
     // its own behalf, and doesn't call mig outside the semaphore
 }
 
@@ -76,7 +76,7 @@ void mig_put_reply_port(mach_port_t reply_port)
 }
 
 
-/* Initialize Mach global data. 
+/* Initialize Mach global data.
    Should be called early in main(). */
 void VG_(mach_init)(void)
 {
@@ -87,7 +87,7 @@ void VG_(mach_init)(void)
     vm_page_size = 4096;
 }
 
-#endif // defined(VGO_darwin) 
+#endif // defined(VGO_darwin)
 
 /*--------------------------------------------------------------------*/
 /*--- end                                                          ---*/
