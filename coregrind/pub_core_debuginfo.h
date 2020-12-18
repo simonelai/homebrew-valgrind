@@ -63,6 +63,14 @@ extern void VG_(di_initialise) ( void );
 #if defined(VGO_linux) || defined(VGO_darwin) || defined(VGO_solaris) || defined(VGO_freebsd)
 extern ULong VG_(di_notify_mmap)( Addr a, Bool allow_SkFileV, Int use_fd );
 
+#if defined(VGO_darwin)
+/* DARWIN: When loading libraries from the dyld cache, we already have
+    everything mmap'd and we don't have a matching file on the disk,
+    so bypass most the logic and get to loading rightaway
+*/
+extern ULong VG_(di_notify_mmap_in_memory)( Addr a );
+#endif
+
 extern void VG_(di_notify_munmap)( Addr a, SizeT len );
 
 extern void VG_(di_notify_mprotect)( Addr a, SizeT len, UInt prot );
@@ -93,7 +101,7 @@ extern
 Bool VG_(get_fnname_no_cxx_demangle) ( DiEpoch ep, Addr a, const HChar** buf,
                                        const InlIPCursor* iipc );
 
-/* mips-linux only: find the offset of current address. This is needed for 
+/* mips-linux only: find the offset of current address. This is needed for
    stack unwinding for MIPS.
 */
 extern
@@ -207,7 +215,7 @@ typedef
    set either to NULL or to a NULL terminated vector containing
    pointers to the secondary names. */
 Int  VG_(DebugInfo_syms_howmany) ( const DebugInfo *di );
-void VG_(DebugInfo_syms_getidx)  ( const DebugInfo *di, 
+void VG_(DebugInfo_syms_getidx)  ( const DebugInfo *di,
                                    Int idx,
                                    /*OUT*/SymAVMAs* ad,
                                    /*OUT*/UInt*     size,
@@ -229,7 +237,7 @@ extern Addr VG_(get_tocptr) ( DiEpoch ep, Addr guest_code_addr );
    platforms, a symbol is deemed to be found only if it has a nonzero
    TOC pointer.  */
 extern
-Bool VG_(lookup_symbol_SLOW)(DiEpoch ep, 
+Bool VG_(lookup_symbol_SLOW)(DiEpoch ep,
                              const HChar* sopatt, const HChar* name,
                              SymAVMAs* avmas);
 

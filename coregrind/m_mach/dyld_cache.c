@@ -32,6 +32,7 @@
 // as some dylib are not provided in file format anymore
 #if defined(VGO_darwin) &&  DARWIN_VERS >= DARWIN_11_00
 
+#include "pub_core_debuginfo.h"             // VG_(di_notify_mmap)
 #include "pub_core_debuglog.h"              // VG_(debugLog)
 #include "pub_core_mach.h"                  // VG_(dyld_cache_*)
 #include "pub_core_syscall.h"               // VG_(do_syscall1)
@@ -192,7 +193,7 @@ static const char* get_dylib_path(const dyld_cache_image_info* info) {
 }
 
 static const void * typed_bytes_payload(const DyldTypedBytes* typed_bytes) {
-  return (const uint8_t*)typed_bytes + sizeof(*typed_bytes);
+  return (const uint8_t*)typed_bytes + sizeof(DyldTypedBytes);
 }
 
 static const DyldTypedBytes* typed_bytes_next(const DyldTypedBytes* current) {
@@ -218,15 +219,9 @@ static const DyldImage* get_image_for_index(uint32_t image_index) {
   }
 
   const void* payload = typed_bytes_payload((const DyldTypedBytes*)dyld_cache.images_new);
-  VG_(debugLog)(3, "dyld_cache", "blib\n");
-  VG_(debugLog)(3, "dyld_cache", "found, IMAGES=%p\n", dyld_cache.images_new);
-  VG_(debugLog)(3, "dyld_cache", "found, PAYLOAD=%p\n", payload);
-  dyld_cache.images_new->offsets[0];
-  VG_(debugLog)(3, "dyld_cache", "found, OFFSETS=%p\n", &dyld_cache.images_new->offsets);
-  VG_(debugLog)(3, "dyld_cache", "found, OFFSET0=%x\n", dyld_cache.images_new->offsets[0]);
-  VG_(debugLog)(3, "dyld_cache", "found, OFFSETN=%x\n", dyld_cache.images_new->offsets[index]);
-  VG_(debugLog)(3, "dyld_cache", "blab\n");
-  return (const DyldImage*)((const uint8_t*)payload + dyld_cache.images_new->offsets[index]);
+  const uint8_t* image_addr = (const uint8_t*)payload + dyld_cache.images_new->offsets[index];
+  VG_(debugLog)(3, "dyld_cache", "found, image=%#lx\n", image_addr);
+  return (const DyldImage*)(image_addr);
 }
 
 static ULong read_uleb128(const uint8_t* p, const uint8_t* end, int* error) {
@@ -258,28 +253,28 @@ static const uint8_t* dyld_trie_walk(const uint8_t* start, const uint8_t* end, c
   visitedNodeOffsets[visitedNodeOffsetCount++] = 0;
   while (p < end) {
     uint64_t terminalSize = *p++;
-    VG_(debugLog)(4, "dyld_cache", "[TRIE] LOOP p=%p end=%p tsize=%llu\n", p, end, terminalSize);
+    // VG_(debugLog)(4, "dyld_cache", "[TRIE] LOOP p=%p end=%p tsize=%llu\n", p, end, terminalSize);
 
     if (terminalSize > 127) {
       // except for re-export-with-rename, all terminal sizes fit in one byte
       --p;
       terminalSize = read_uleb128(p, end, &error);
       if (error) {
-        VG_(debugLog)(4, "dyld_cache", "[TRIE] ULEB FAILED\n");
+        // VG_(debugLog)(4, "dyld_cache", "[TRIE] ULEB FAILED\n");
         return NULL;
       }
-      VG_(debugLog)(4, "dyld_cache", "[TRIE] REREAD ULEB tsize=%llu\n", terminalSize);
+      // VG_(debugLog)(4, "dyld_cache", "[TRIE] REREAD ULEB tsize=%llu\n", terminalSize);
     }
 
-    VG_(debugLog)(4, "dyld_cache", "[TRIE] STATE path=%s\n", path);
+    // VG_(debugLog)(4, "dyld_cache", "[TRIE] STATE path=%s\n", path);
     if ((*path == '\0') && (terminalSize != 0)) {
-      VG_(debugLog)(4, "dyld_cache", "[TRIE] FOUND p=%p\n", p);
+      // VG_(debugLog)(4, "dyld_cache", "[TRIE] FOUND p=%p\n", p);
       return p;
     }
 
     const uint8_t* children = p + terminalSize;
     if (children > end) {
-      VG_(debugLog)(4, "dyld_cache", "[TRIE] CHILDREN, TOO FAR\n");
+      // VG_(debugLog)(4, "dyld_cache", "[TRIE] CHILDREN, TOO FAR\n");
       return NULL;
     }
 
@@ -288,7 +283,7 @@ static const uint8_t* dyld_trie_walk(const uint8_t* start, const uint8_t* end, c
 
     p = children;
     for (; childrenRemaining > 0; --childrenRemaining) {
-      VG_(debugLog)(4, "dyld_cache", "[TRIE] CHILDREN LOOP children=%p remaining=%d\n", p, childrenRemaining);
+      // VG_(debugLog)(4, "dyld_cache", "[TRIE] CHILDREN LOOP children=%p remaining=%d\n", p, childrenRemaining);
       const char* ss = path;
       int wrongEdge = 0;
 
@@ -296,7 +291,7 @@ static const uint8_t* dyld_trie_walk(const uint8_t* start, const uint8_t* end, c
       // if edge is longer than target symbol name, don't read past end of symbol name
       char c = *p;
       while (c != '\0') {
-        VG_(debugLog)(4, "dyld_cache", "[TRIE] CHAR LOOP c=%c ss=%c wrong=%d\n", c, *ss, wrongEdge);
+        // VG_(debugLog)(4, "dyld_cache", "[TRIE] CHAR LOOP c=%c ss=%c wrong=%d\n", c, *ss, wrongEdge);
         if (!wrongEdge) {
           if (c != *ss) {
             wrongEdge = 1;
@@ -308,7 +303,7 @@ static const uint8_t* dyld_trie_walk(const uint8_t* start, const uint8_t* end, c
       }
 
       if (wrongEdge) {
-        VG_(debugLog)(4, "dyld_cache", "[TRIE] WRONG EDGE, SKIP\n");
+        // VG_(debugLog)(4, "dyld_cache", "[TRIE] WRONG EDGE, SKIP\n");
         // advance to next child
         ++p; // skip over zero terminator
         // skip over uleb128 until last byte is found
@@ -317,50 +312,50 @@ static const uint8_t* dyld_trie_walk(const uint8_t* start, const uint8_t* end, c
         }
         ++p; // skip over last byte of uleb128
         if (p > end) {
-          VG_(debugLog)(4, "dyld_cache", "[TRIE] WRONG EDGE, TOO FAR\n");
+          // VG_(debugLog)(4, "dyld_cache", "[TRIE] WRONG EDGE, TOO FAR\n");
           return NULL;
         }
       } else {
-        VG_(debugLog)(4, "dyld_cache", "[TRIE] MATCHING\n");
+        // VG_(debugLog)(4, "dyld_cache", "[TRIE] MATCHING\n");
         // the symbol so far matches this edge (child)
         // so advance to the child's node
         ++p;
         nodeOffset = read_uleb128(p, end, &error);
         if (error) {
-          VG_(debugLog)(4, "dyld_cache", "[TRIE] ULEB2 FAILED\n");
+          // VG_(debugLog)(4, "dyld_cache", "[TRIE] ULEB2 FAILED\n");
           return NULL;
         }
-        VG_(debugLog)(4, "dyld_cache", "[TRIE] READ ULEB2 nodeOffset=%llu\n", nodeOffset);
+        // VG_(debugLog)(4, "dyld_cache", "[TRIE] READ ULEB2 nodeOffset=%llu\n", nodeOffset);
         if ((nodeOffset == 0) || ( &start[nodeOffset] > end)) {
-          VG_(debugLog)(4, "dyld_cache", "[TRIE] WRONG OFFSET\n");
+          // VG_(debugLog)(4, "dyld_cache", "[TRIE] WRONG OFFSET\n");
           return NULL;
         }
         path = ss;
-        VG_(debugLog)(4, "dyld_cache", "[TRIE] NEW PATH path=%s\n", path);
+        // VG_(debugLog)(4, "dyld_cache", "[TRIE] NEW PATH path=%s\n", path);
         break;
       }
     }
 
     if (nodeOffset != 0) {
       if (nodeOffset > (uint64_t)(end - start)) {
-        VG_(debugLog)(4, "dyld_cache", "[TRIE] OFFSET TOO FAR\n");
+        // VG_(debugLog)(4, "dyld_cache", "[TRIE] OFFSET TOO FAR\n");
         return NULL;
       }
       for (int i = 0; i < visitedNodeOffsetCount; ++i) {
         if (visitedNodeOffsets[i] == nodeOffset) {
-          VG_(debugLog)(4, "dyld_cache", "[TRIE] ALREADY VISITED OFFSET\n");
+          // VG_(debugLog)(4, "dyld_cache", "[TRIE] ALREADY VISITED OFFSET\n");
           return NULL;
         }
       }
-      VG_(debugLog)(4, "dyld_cache", "[TRIE] MARKING OFFSET nodeOffset=%llu\n", nodeOffset);
+      // VG_(debugLog)(4, "dyld_cache", "[TRIE] MARKING OFFSET nodeOffset=%llu\n", nodeOffset);
       visitedNodeOffsets[visitedNodeOffsetCount++] = (uint32_t)nodeOffset;
-      VG_(debugLog)(4, "dyld_cache", "[TRIE] NOW USING OFFSETS count=%d\n", visitedNodeOffsetCount);
+      // VG_(debugLog)(4, "dyld_cache", "[TRIE] NOW USING OFFSETS count=%d\n", visitedNodeOffsetCount);
       if (visitedNodeOffsetCount >= DYLD_TRIE_MAX_OFFSETS) {
-        VG_(debugLog)(4, "dyld_cache", "[TRIE] TOO MANY OFFSETS\n");
+        // VG_(debugLog)(4, "dyld_cache", "[TRIE] TOO MANY OFFSETS\n");
         return NULL;
       }
       p = &start[nodeOffset];
-      VG_(debugLog)(4, "dyld_cache", "[TRIE] JUMPING WITH OFFSET p=%p\n", p);
+      // VG_(debugLog)(4, "dyld_cache", "[TRIE] JUMPING WITH OFFSET p=%p\n", p);
     } else {
       return NULL;
     }
@@ -406,7 +401,7 @@ static const DyldImage* get_image_for_path(const HChar* path) {
 static const void* get_image_attribute(const DyldImage* image, DyldImageTypeAttribute attribute, uint32_t* size) {
   vg_assert(((Addr)image & 0x3) == 0);
   vg_assert(size != NULL);
-  size = 0;
+  *size = 0;
   const DyldTypedBytes* start = (const DyldTypedBytes*) typed_bytes_payload((const DyldTypedBytes*)image);
   const DyldTypedBytes* end = typed_bytes_next((const DyldTypedBytes*)image);
   for (const DyldTypedBytes* p = start; p < end; p = typed_bytes_next(p)) {
@@ -423,9 +418,11 @@ static void track_macho_file(Addr addr) {
   const struct mach_header * header = (const struct mach_header *)addr;
 
   ML_(notify_core_and_tool_of_mmap)(
-    (Addr)header, sizeof(struct mach_header) + header->sizeofcmds,
-    VKI_PROT_READ, VKI_MAP_ANON, -1, 0
+    (Addr)header, sizeof(struct mach_header),
+    VKI_PROT_READ | VKI_PROT_EXEC, VKI_MAP_ANON, -1, 0
   );
+
+  VG_(di_notify_mmap_in_memory)(header);
 }
 
 int VG_(dyld_cache_check_and_register)(const HChar* path) {
