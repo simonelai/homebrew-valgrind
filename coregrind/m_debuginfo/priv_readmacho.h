@@ -45,6 +45,7 @@ extern Bool ML_(is_macho_object_file)( const void* buf, SizeT size );
 */
 extern Bool ML_(read_macho_debug_info) ( DebugInfo* si );
 
+extern Bool ML_(read_macho_debug_info_from_memory) ( DebugInfo* si );
 
 #endif /* ndef __PRIV_READMACHO_H */
 

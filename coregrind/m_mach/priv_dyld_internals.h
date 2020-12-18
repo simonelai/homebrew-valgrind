@@ -146,7 +146,7 @@ typedef struct {
   //
   uint32_t     firstImageNum;
   uint32_t     count;
-  uint32_t*    offsets;
+  uint32_t     offsets[];
 } DyldImageArray;
 
 typedef struct {

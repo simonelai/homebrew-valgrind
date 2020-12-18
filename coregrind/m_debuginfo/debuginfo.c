@@ -9,7 +9,7 @@
    This file is part of Valgrind, a dynamic binary instrumentation
    framework.
 
-   Copyright (C) 2000-2017 Julian Seward 
+   Copyright (C) 2000-2017 Julian Seward
       jseward@acm.org
 
    This program is free software; you can redistribute it and/or
@@ -80,14 +80,14 @@
    debuginfo reading confusing.  Recently I arrived at some
    terminology which makes it clearer (to me, at least).  There are 3
    kinds of address used in the debuginfo reading process:
- 
+
    stated VMAs - the address where (eg) a .so says a symbol is, that
                  is, what it tells you if you consider the .so in
                  isolation
- 
+
    actual VMAs - the address where (eg) said symbol really wound up
                  after the .so was mapped into memory
- 
+
    image addresses - pointers into the copy of the .so (etc)
                      transiently mmaped aboard whilst we read its info
 
@@ -294,7 +294,7 @@ static void show_epochs ( const HChar* msg )
 static ULong handle_counter = 1;
 
 /* Allocate and zero out a new DebugInfo record. */
-static 
+static
 DebugInfo* alloc_DebugInfo( const HChar* filename )
 {
    Bool       traceme;
@@ -313,7 +313,7 @@ DebugInfo* alloc_DebugInfo( const HChar* filename )
 
    /* Everything else -- pointers, sizes, arrays -- is zeroed by
       ML_(dinfo_zalloc).  Now set up the debugging-output flags. */
-   traceme 
+   traceme
       = VG_(string_match)( VG_(clo_trace_symtab_patt), filename );
    if (traceme) {
       di->trace_symtab = VG_(clo_trace_symtab);
@@ -458,7 +458,7 @@ static void discard_or_archive_DebugInfo ( DebugInfo* di )
          if (VG_(clo_verbosity) > 1 || VG_(clo_trace_redir))
             VG_(dmsg)("%s syms at %#lx-%#lx in %s (have_dinfo %d)\n",
                       archive ? "Archiving" : "Discarding",
-                      di->text_avma, 
+                      di->text_avma,
                       di->text_avma + di->text_size,
                       curr->fsm.filename ? curr->fsm.filename
                                            : "???",
@@ -536,7 +536,7 @@ static Bool discard_syms_in_range ( Addr start, SizeT length )
 static Bool ranges_overlap (Addr s1, SizeT len1, Addr s2, SizeT len2 )
 {
    Addr e1, e2;
-   if (len1 == 0 || len2 == 0) 
+   if (len1 == 0 || len2 == 0)
       return False;
    e1 = s1 + len1 - 1;
    e2 = s2 + len2 - 1;
@@ -847,7 +847,7 @@ static Bool overlaps_DebugInfoMappings ( const DebugInfoMapping* map1,
 
 
 /* Helper (indirect) for di_notify_ACHIEVE_ACCEPT_STATE */
-static void show_DebugInfoMappings 
+static void show_DebugInfoMappings
                ( const DebugInfo* di,
                  /*MOD*/XArray* maps /* XArray<DebugInfoMapping> */ )
 {
@@ -951,7 +951,7 @@ static void truncate_DebugInfoMapping_overlaps
 
 /* When the sequence of observations causes a DebugInfoFSM to move
    into the accept state, call here to actually get the debuginfo read
-   in.  Returns a ULong whose purpose is described in comments 
+   in.  Returns a ULong whose purpose is described in comments
    preceding VG_(di_notify_mmap) just below.
 */
 static ULong di_notify_ACHIEVE_ACCEPT_STATE ( struct _DebugInfo* di )
@@ -1083,7 +1083,7 @@ ULong VG_(di_notify_mmap)( Addr a, Bool allow_SkFileV, Int use_fd )
    if (debug) {
       VG_(dmsg)("di_notify_mmap-0:\n");
       VG_(dmsg)("di_notify_mmap-1: %#lx-%#lx %c%c%c\n",
-                seg->start, seg->end, 
+                seg->start, seg->end,
                 seg->hasR ? 'r' : '-',
                 seg->hasW ? 'w' : '-',seg->hasX ? 'x' : '-' );
    }
@@ -1344,8 +1344,111 @@ ULong VG_(di_notify_mmap)( Addr a, Bool allow_SkFileV, Int use_fd )
    }
 }
 
+#if defined(VGO_darwin)
+ULong VG_(di_notify_mmap_in_memory)( Addr a, const HChar* filename )
+{
+   NSegment const * seg;
+   Bool       is_rx_map, is_rw_map, is_ro_map;
+   DebugInfo* di;
+   const Bool       debug = VG_(debugLog_getLevel)() >= 3;
 
-/* Unmap is simpler - throw away any SegInfos intersecting 
+   /* In short, figure out if this mapping is of interest to us, and
+      if so, try to guess what ld.so is doing and when/if we should
+      read debug info. */
+   seg = VG_(am_find_nsegment)(a);
+   vg_assert(seg);
+
+   filename = VG_(am_get_filename)( seg );
+   if (!filename)
+      return 0;
+
+   if (debug) {
+      VG_(dmsg)("di_notify_mmap_in_memory-0:\n");
+      VG_(dmsg)("di_notify_mmap_in_memory-1: %#lx-%#lx %c%c%c\n",
+                seg->start, seg->end,
+                seg->hasR ? 'r' : '-',
+                seg->hasW ? 'w' : '-',seg->hasX ? 'x' : '-' );
+   }
+
+   /* guaranteed by aspacemgr-linux.c, sane_NSegment() */
+   vg_assert(seg->end > seg->start);
+
+   if (debug)
+      VG_(dmsg)("di_notify_mmap_in_memory-2: %s\n", filename);
+
+   is_rx_map = False;
+   is_rw_map = False;
+   is_ro_map = False;
+
+#  if defined(VGA_x86) || defined(VGA_ppc32) || defined(VGA_mips32) \
+      || defined(VGA_mips64) || defined(VGA_nanomips)
+   is_rx_map = seg->hasR && seg->hasX;
+   is_rw_map = seg->hasR && seg->hasW;
+#  elif defined(VGA_amd64) || defined(VGA_ppc64be) || defined(VGA_ppc64le)  \
+        || defined(VGA_arm) || defined(VGA_arm64)
+   is_rx_map = seg->hasR && seg->hasX && !seg->hasW;
+   is_rw_map = seg->hasR && seg->hasW && !seg->hasX;
+#  else
+#    error "Unknown platform"
+#  endif
+
+   is_ro_map = seg->hasR && !seg->hasW && !seg->hasX;
+
+   if (debug)
+      VG_(dmsg)("di_notify_mmap_in_memory-3: "
+                "is_rx_map %d, is_rw_map %d, is_ro_map %d\n",
+                (Int)is_rx_map, (Int)is_rw_map, (Int)is_ro_map);
+
+   /* Ignore mappings with permissions we can't possibly be interested in. */
+   if (!(is_rx_map || is_rw_map || is_ro_map))
+      return 0;
+
+   if (!ML_(is_macho_object_file)( a, sizeof(struct mach_header) ))
+      return 0;
+
+   /* See if we have a DebugInfo for this filename.  If not,
+      create one. */
+   di = find_or_create_DebugInfo_for( filename );
+   vg_assert(di);
+
+   if (di->have_dinfo) {
+      if (debug)
+         VG_(dmsg)("di_notify_mmap_in_memory-4x: "
+                   "ignoring mapping because we already read debuginfo "
+                   "for DebugInfo* %p\n", di);
+      return 0;
+   }
+
+   if (debug)
+      VG_(dmsg)("di_notify_mmap_in_memory-4: "
+                "noting details in DebugInfo* at %p\n", di);
+
+   /* Note the details about the mapping. */
+   DebugInfoMapping map;
+   map.avma = seg->start;
+   map.size = seg->end + 1 - seg->start;
+   map.foff = seg->offset;
+   map.rx   = is_rx_map;
+   map.rw   = is_rw_map;
+   map.ro   = is_ro_map;
+   VG_(addToXA)(di->fsm.maps, &map);
+
+   /* Update flags about what kind of mappings we've already seen. */
+   di->fsm.have_rx_map |= is_rx_map;
+   di->fsm.have_rw_map |= is_rw_map;
+   di->fsm.have_ro_map |= is_ro_map;
+
+   vg_assert(!di->have_dinfo);
+   vg_assert(di->fsm.have_rx_map && di->fsm.have_rw_map);
+
+   if (debug)
+      VG_(dmsg)("di_notify_mmap_in_memory-5: "
+                "achieved accept state for %s\n", filename);
+   return di_notify_ACHIEVE_ACCEPT_STATE ( di );
+}
+#endif
+
+/* Unmap is simpler - throw away any SegInfos intersecting
    [a, a+len).  */
 void VG_(di_notify_munmap)( Addr a, SizeT len )
 {
@@ -1497,7 +1600,7 @@ void VG_(di_notify_pdb_debuginfo)( Int fd_obj, Addr avma_obj,
       VG_(message)(Vg_UserMsg, "\n");
       VG_(message)(Vg_UserMsg,
          "LOAD_PDB_DEBUGINFO: clreq:   fd=%d, avma=%#lx, total_size=%lu, "
-         "bias=%#lx\n", 
+         "bias=%#lx\n",
          fd_obj, avma_obj, total_size, (UWord)bias_obj
       );
    }
@@ -1516,7 +1619,7 @@ void VG_(di_notify_pdb_debuginfo)( Int fd_obj, Addr avma_obj,
       return; /*  failed */
    sz_exename = VG_(strlen)(exe);
    HChar exename[sz_exename + 1];
-   VG_(strcpy)(exename, exe);  // make a copy on the stack 
+   VG_(strcpy)(exename, exe);  // make a copy on the stack
 
    if (VG_(clo_verbosity) > 0) {
       VG_(message)(Vg_UserMsg, "LOAD_PDB_DEBUGINFO: objname: %s\n", exename);
@@ -1739,7 +1842,7 @@ void VG_(di_discard_ALL_debuginfo)( void )
 DebugInfoMapping* ML_(find_rx_mapping) ( DebugInfo* di, Addr lo, Addr hi )
 {
    Word i;
-   vg_assert(lo <= hi); 
+   vg_assert(lo <= hi);
 
    /* Optimization: Try to use the last matched rx mapping first */
    if (   di->last_rx_map
@@ -1806,7 +1909,7 @@ Bool VG_(next_IIPC)(InlIPCursor *iipc)
 
    di = iipc->di;
    for (i = iipc->inltab_lopos; i <= iipc->inltab_hipos; i++) {
-      if (di->inltab[i].addr_lo <= iipc->eip 
+      if (di->inltab[i].addr_lo <= iipc->eip
           && iipc->eip < di->inltab[i].addr_hi
           && di->inltab[i].level < iipc->curlevel
           && (!hinl || hinl->level < di->inltab[i].level)) {
@@ -1814,7 +1917,7 @@ Bool VG_(next_IIPC)(InlIPCursor *iipc)
          hinl_pos = i;
       }
    }
-   
+
    iipc->cur_inltab = iipc->next_inltab;
    iipc->next_inltab = hinl_pos;
    if (iipc->next_inltab < 0)
@@ -1836,12 +1939,12 @@ static void search_all_loctabs ( DiEpoch ep, Addr ptr,
    (note that inltab might have duplicates addr_lo). */
 static Word inltab_insert_pos (DebugInfo *di, Addr eip)
 {
-   Word mid, 
-        lo = 0, 
+   Word mid,
+        lo = 0,
         hi = di->inltab_used-1;
    while (lo <= hi) {
       mid      = (lo + hi) / 2;
-      if (eip < di->inltab[mid].addr_lo) { hi = mid-1; continue; } 
+      if (eip < di->inltab[mid].addr_lo) { hi = mid-1; continue; }
       if (eip > di->inltab[mid].addr_lo) { lo = mid+1; continue; }
       lo = mid; break;
    }
@@ -1887,7 +1990,7 @@ InlIPCursor* VG_(new_IIPC)(DiEpoch ep, Addr eip)
       if (di->inltab[i].addr_lo < eip - di->maxinl_codesz)
          return NULL;
    }
-   
+
    if (i < 0)
       return NULL; // No entry containing eip.
 
@@ -1898,7 +2001,7 @@ InlIPCursor* VG_(new_IIPC)(DiEpoch ep, Addr eip)
    ret->di = di;
    ret->inltab_hipos = i;
    for (i = ret->inltab_hipos - 1; i >= 0; i--) {
-     
+
       if (di->inltab[i].addr_lo < eip - di->maxinl_codesz)
          break; /* Similar stop backward scan logic as above. */
    }
@@ -1955,27 +2058,27 @@ static void search_all_symtabs ( DiEpoch ep, Addr ptr,
       } else {
          inRange = (di->data_present
                     && di->data_size > 0
-                    && di->data_avma <= ptr 
+                    && di->data_avma <= ptr
                     && ptr < di->data_avma + di->data_size)
                    ||
                    (di->sdata_present
                     && di->sdata_size > 0
-                    && di->sdata_avma <= ptr 
+                    && di->sdata_avma <= ptr
                     && ptr < di->sdata_avma + di->sdata_size)
                    ||
                    (di->bss_present
                     && di->bss_size > 0
-                    && di->bss_avma <= ptr 
+                    && di->bss_avma <= ptr
                     && ptr < di->bss_avma + di->bss_size)
                    ||
                    (di->sbss_present
                     && di->sbss_size > 0
-                    && di->sbss_avma <= ptr 
+                    && di->sbss_avma <= ptr
                     && ptr < di->sbss_avma + di->sbss_size)
                    ||
                    (di->rodata_present
                     && di->rodata_size > 0
-                    && di->rodata_avma <= ptr 
+                    && di->rodata_avma <= ptr
                     && ptr < di->rodata_avma + di->rodata_size);
       }
 
@@ -2006,7 +2109,7 @@ static void search_all_loctabs ( DiEpoch ep, Addr ptr,
          continue;
       if (di->text_present
           && di->text_size > 0
-          && di->text_avma <= ptr 
+          && di->text_avma <= ptr
           && ptr < di->text_avma + di->text_size) {
          lno = ML_(search_one_loctab) ( di, ptr );
          if (lno == -1) goto not_found;
@@ -2031,7 +2134,7 @@ typedef
       Addr    sym_avma;
       // Fields below here are not part of the key.
       const HChar* sym_name;
-      PtrdiffT offset : (sizeof(PtrdiffT)*8)-1; 
+      PtrdiffT offset : (sizeof(PtrdiffT)*8)-1;
       Bool isText : 1;
    }
    Sym_Name_CacheEnt;
@@ -2067,10 +2170,10 @@ static void sym_name_cache__invalidate ( void ) {
    -- caller must choose one kind or the other.
 
    NOTE: See IMPORTANT COMMENT above about persistence and ownership
-   in pub_tool_debuginfo.h 
+   in pub_tool_debuginfo.h
    get_sym_name and the fact it calls the demangler is the main reason
    for non persistence of the information returned by m_debuginfo.c
-   functions : the string returned in *BUF is persistent as long as 
+   functions : the string returned in *BUF is persistent as long as
    (1) the DebugInfo it belongs to is not discarded
    (2) the demangler is not invoked again
    Also, the returned string is owned by "somebody else". Callers must
@@ -2121,7 +2224,7 @@ Bool get_sym_name ( Bool do_cxx_demangling, Bool do_z_demangling,
                    se->sym_name, buf );
 
    /* Do the below-main hack */
-   // To reduce the endless nuisance of multiple different names 
+   // To reduce the endless nuisance of multiple different names
    // for "the frame below main()" screwing up the testsuite, change all
    // known incarnations of said into a single name, "(below main)", if
    // --show-below-main=yes.
@@ -2166,7 +2269,7 @@ Addr VG_(get_tocptr) ( DiEpoch ep, Addr guest_code_addr )
    search_all_symtabs ( ep, guest_code_addr,
                         &si, &sno,
                         True/*consider text symbols only*/ );
-   if (si == NULL) 
+   if (si == NULL)
       return 0;
    else
       return GET_TOCPTR_AVMA(si->symtab[sno].avmas);
@@ -2184,7 +2287,7 @@ Bool VG_(get_fnname) ( DiEpoch ep, Addr a, const HChar** buf )
    return get_sym_name ( /*C++-demangle*/True, /*Z-demangle*/True,
                          /*below-main-renaming*/True,
                          ep, a, buf,
-                         /*match_anywhere_in_fun*/True, 
+                         /*match_anywhere_in_fun*/True,
                          /*show offset?*/False,
                          /*text sym*/True,
                          /*offsetP*/NULL );
@@ -2199,7 +2302,7 @@ Bool VG_(get_fnname_w_offset) ( DiEpoch ep, Addr a, const HChar** buf )
    return get_sym_name ( /*C++-demangle*/True, /*Z-demangle*/True,
                          /*below-main-renaming*/True,
                          ep, a, buf,
-                         /*match_anywhere_in_fun*/True, 
+                         /*match_anywhere_in_fun*/True,
                          /*show offset?*/True,
                          /*text sym*/True,
                          /*offsetP*/NULL );
@@ -2218,7 +2321,7 @@ Bool VG_(get_fnname_if_entry) ( DiEpoch ep, Addr a, const HChar** buf )
    res =  get_sym_name ( /*C++-demangle*/True, /*Z-demangle*/True,
                          /*below-main-renaming*/True,
                          ep, a, &tmp,
-                         /*match_anywhere_in_fun*/False, 
+                         /*match_anywhere_in_fun*/False,
                          /*show offset?*/False,
                          /*text sym*/True,
                          /*offsetP*/NULL );
@@ -2237,7 +2340,7 @@ Bool VG_(get_fnname_raw) ( DiEpoch ep, Addr a, const HChar** buf )
    return get_sym_name ( /*C++-demangle*/False, /*Z-demangle*/False,
                          /*below-main-renaming*/False,
                          ep, a, buf,
-                         /*match_anywhere_in_fun*/True, 
+                         /*match_anywhere_in_fun*/True,
                          /*show offset?*/False,
                          /*text sym*/True,
                          /*offsetP*/NULL );
@@ -2265,7 +2368,7 @@ Bool VG_(get_fnname_no_cxx_demangle) ( DiEpoch ep, Addr a, const HChar** buf,
       return get_sym_name ( /*C++-demangle*/False, /*Z-demangle*/True,
                             /*below-main-renaming*/True,
                             ep, a, buf,
-                            /*match_anywhere_in_fun*/True, 
+                            /*match_anywhere_in_fun*/True,
                             /*show offset?*/False,
                             /*text sym*/True,
                             /*offsetP*/NULL );
@@ -2280,7 +2383,7 @@ Bool VG_(get_fnname_no_cxx_demangle) ( DiEpoch ep, Addr a, const HChar** buf,
    }
 }
 
-/* mips-linux only: find the offset of current address. This is needed for 
+/* mips-linux only: find the offset of current address. This is needed for
    stack unwinding for MIPS.
 */
 Bool VG_(get_inst_offset_in_function)( DiEpoch ep, Addr a,
@@ -2290,7 +2393,7 @@ Bool VG_(get_inst_offset_in_function)( DiEpoch ep, Addr a,
    return get_sym_name ( /*C++-demangle*/False, /*Z-demangle*/False,
                          /*below-main-renaming*/False,
                          ep, a, &fnname,
-                         /*match_anywhere_in_sym*/True, 
+                         /*match_anywhere_in_sym*/True,
                          /*show offset?*/False,
                          /*text sym*/True,
                          offset );
@@ -2350,7 +2453,7 @@ Bool VG_(get_datasym_and_offset)( DiEpoch ep, Addr data_addr,
    return get_sym_name ( /*C++-demangle*/False, /*Z-demangle*/False,
                        /*below-main-renaming*/False,
                        ep, data_addr, dname,
-                       /*match_anywhere_in_sym*/True, 
+                       /*match_anywhere_in_sym*/True,
                        /*show offset?*/False,
                        /*text sym*/False,
                        offset );
@@ -2358,7 +2461,7 @@ Bool VG_(get_datasym_and_offset)( DiEpoch ep, Addr data_addr,
 
 /* Map a code address to the name of a shared object file or the
    executable.  Returns False if no idea; otherwise True.
-   Note: the string returned in *BUF is persistent as long as 
+   Note: the string returned in *BUF is persistent as long as
    (1) the DebugInfo it belongs to is not discarded
    (2) the segment containing the address is not merged with another segment
 */
@@ -2375,7 +2478,7 @@ Bool VG_(get_objname) ( DiEpoch ep, Addr a, const HChar** objname )
          continue;
       if (di->text_present
           && di->text_size > 0
-          && di->text_avma <= a 
+          && di->text_avma <= a
           && a < di->text_avma + di->text_size) {
          *objname = di->fsm.filename;
          return True;
@@ -2411,7 +2514,7 @@ DebugInfo* VG_(find_DebugInfo) ( DiEpoch ep, Addr a )
          continue;
       if (di->text_present
           && di->text_size > 0
-          && di->text_avma <= a 
+          && di->text_avma <= a
           && a < di->text_avma + di->text_size) {
          if (0 == (n_search & 0xF))
             move_DebugInfo_one_step_forward( di );
@@ -2431,7 +2534,7 @@ Bool VG_(get_filename)( DiEpoch ep, Addr a, const HChar** filename )
    UInt       fndn_ix;
 
    search_all_loctabs ( ep, a, &si, &locno );
-   if (si == NULL) 
+   if (si == NULL)
       return False;
    fndn_ix = ML_(fndn_ix) (si, locno);
    *filename = ML_(fndn_ix2filename) (si, fndn_ix);
@@ -2444,7 +2547,7 @@ Bool VG_(get_linenum)( DiEpoch ep, Addr a, UInt* lineno )
    DebugInfo* si;
    Word       locno;
    search_all_loctabs ( ep, a, &si, &locno );
-   if (si == NULL) 
+   if (si == NULL)
       return False;
    *lineno = si->loctab[locno].lineno;
 
@@ -2526,7 +2629,7 @@ Bool VG_(lookup_symbol_SLOW)(DiEpoch ep,
             vg_assert(sec_names[0]);
             while (*sec_names) {
                if (0==VG_(strcmp)(name, *sec_names)
-                   && (require_pToc 
+                   && (require_pToc
                        ? GET_TOCPTR_AVMA(si->symtab[i].avmas) : True)) {
                   *avmas = si->symtab[i].avmas;
                   return True;
@@ -2546,8 +2649,8 @@ Bool VG_(lookup_symbol_SLOW)(DiEpoch ep,
 
 /* Copy str into *buf starting at n, ensuring that buf is zero-terminated.
    Return the index of the terminating null character. */
-static SizeT 
-putStr( SizeT n, HChar** buf, SizeT *bufsiz, const HChar* str ) 
+static SizeT
+putStr( SizeT n, HChar** buf, SizeT *bufsiz, const HChar* str )
 {
    SizeT slen = VG_(strlen)(str);
    SizeT need = n + slen + 1;
@@ -2564,21 +2667,21 @@ putStr( SizeT n, HChar** buf, SizeT *bufsiz, const HChar* str )
 }
 
 /* Same as putStr, but escaping chars for XML output. */
-static SizeT 
+static SizeT
 putStrEsc( SizeT n, HChar** buf, SizeT *bufsiz, const HChar* str )
 {
    HChar alt[2];
 
    for (; *str != 0; str++) {
       switch (*str) {
-         case '&': 
-            n = putStr( n, buf, bufsiz, "&amp;"); 
+         case '&':
+            n = putStr( n, buf, bufsiz, "&amp;");
             break;
-         case '<': 
-            n = putStr( n, buf, bufsiz, "&lt;"); 
+         case '<':
+            n = putStr( n, buf, bufsiz, "&lt;");
             break;
-         case '>': 
-            n = putStr( n, buf, bufsiz, "&gt;"); 
+         case '>':
+            n = putStr( n, buf, bufsiz, "&gt;");
             break;
          default:
             alt[0] = *str;
@@ -2599,7 +2702,7 @@ const HChar* VG_(describe_IP)(DiEpoch ep, Addr eip, const InlIPCursor *iipc)
 #  define APPEND_ESC(_str) \
       n = putStrEsc(n, &buf, &bufsiz, _str)
 
-   UInt  lineno; 
+   UInt  lineno;
    HChar ibuf[50];   // large enough
    SizeT n = 0;
 
@@ -2747,7 +2850,7 @@ const HChar* VG_(describe_IP)(DiEpoch ep, Addr eip, const InlIPCursor *iipc)
             Int i;
             dirname = buf_dirname;
             // Remove leading prefixes from the dirname.
-            // If user supplied --fullpath-after=foo, this will remove 
+            // If user supplied --fullpath-after=foo, this will remove
             // a leading string which matches '.*foo' (not greedy).
             for (i = 0; i < VG_(sizeXA)(VG_(clo_fullpath_after)); i++) {
                const HChar* prefix =
@@ -2827,7 +2930,7 @@ typedef
    caller must set it to True before calling. */
 __attribute__((noinline))
 static
-UWord evalCfiExpr ( const XArray* exprs, Int ix, 
+UWord evalCfiExpr ( const XArray* exprs, Int ix,
                     const CfiExprEvalContext* eec, Bool* ok )
 {
    UWord w, wL, wR;
@@ -2914,7 +3017,7 @@ UWord evalCfiExpr ( const XArray* exprs, Int ix,
          }
          /* let's hope it doesn't trap! */
          return ML_(read_UWord)((void *)a);
-      default: 
+      default:
          goto unhandled;
    }
    /*NOTREACHED*/
@@ -2929,7 +3032,7 @@ UWord evalCfiExpr ( const XArray* exprs, Int ix,
 
 
 /* Search all the DebugInfos in the entire system, to find the DiCfSI_m
-   that pertains to 'ip'. 
+   that pertains to 'ip'.
 
    If found, set *diP to the DebugInfo in which it resides, and
    *cfsi_mP to the cfsi_m pointer in that DebugInfo's cfsi_m_pool.
@@ -2940,7 +3043,7 @@ UWord evalCfiExpr ( const XArray* exprs, Int ix,
    DebugInfos that are valid for the current epoch.
 */
 __attribute__((noinline))
-static void find_DiCfSI ( /*OUT*/DebugInfo** diP, 
+static void find_DiCfSI ( /*OUT*/DebugInfo** diP,
                           /*OUT*/DiCfSI_m** cfsi_mP,
                           Addr ip )
 {
@@ -3020,7 +3123,7 @@ static void find_DiCfSI ( /*OUT*/DebugInfo** diP,
 
       if (0 && ((n_search & 0x7FFFF) == 0))
          VG_(printf)("find_DiCfSI: %lu searches, "
-                     "%lu DebugInfos looked at\n", 
+                     "%lu DebugInfos looked at\n",
                      n_search, n_steps);
 
    }
@@ -3112,23 +3215,23 @@ static Addr compute_cfa ( const D3UnwindRegs* uregs,
    cfa = 0;
    switch (cfsi_m->cfa_how) {
 #     if defined(VGA_x86) || defined(VGA_amd64)
-      case CFIC_IA_SPREL: 
+      case CFIC_IA_SPREL:
          cfa = cfsi_m->cfa_off + uregs->xsp;
          break;
-      case CFIC_IA_BPREL: 
+      case CFIC_IA_BPREL:
          cfa = cfsi_m->cfa_off + uregs->xbp;
          break;
 #     elif defined(VGA_arm)
-      case CFIC_ARM_R13REL: 
+      case CFIC_ARM_R13REL:
          cfa = cfsi_m->cfa_off + uregs->r13;
          break;
-      case CFIC_ARM_R12REL: 
+      case CFIC_ARM_R12REL:
          cfa = cfsi_m->cfa_off + uregs->r12;
          break;
-      case CFIC_ARM_R11REL: 
+      case CFIC_ARM_R11REL:
          cfa = cfsi_m->cfa_off + uregs->r11;
          break;
-      case CFIC_ARM_R7REL: 
+      case CFIC_ARM_R7REL:
          cfa = cfsi_m->cfa_off + uregs->r7;
          break;
 #     elif defined(VGA_s390x)
@@ -3161,10 +3264,10 @@ static Addr compute_cfa ( const D3UnwindRegs* uregs,
          break;
 #     elif defined(VGA_ppc32) || defined(VGA_ppc64be) || defined(VGA_ppc64le)
 #     elif defined(VGP_arm64_linux)
-      case CFIC_ARM64_SPREL: 
+      case CFIC_ARM64_SPREL:
          cfa = cfsi_m->cfa_off + uregs->sp;
          break;
-      case CFIC_ARM64_X29REL: 
+      case CFIC_ARM64_X29REL:
          cfa = cfsi_m->cfa_off + uregs->x29;
          break;
 #     else
@@ -3183,7 +3286,7 @@ static Addr compute_cfa ( const D3UnwindRegs* uregs,
          cfa = evalCfiExpr(di->cfsi_exprs, cfsi_m->cfa_off, &eec, &ok );
          if (!ok) return 0;
          break;
-      default: 
+      default:
          vg_assert(0);
    }
    return cfa;
@@ -3324,7 +3427,7 @@ Bool VG_(use_CF_info) ( /*MOD*/D3UnwindRegs* uregsHere,
    cfsi_m = ce->cfsi_m;
 
    if (0) {
-      VG_(printf)("found cfsi_m (but printing fake base/len): "); 
+      VG_(printf)("found cfsi_m (but printing fake base/len): ");
       ML_(ppDiCfSI)(di->cfsi_exprs, 0, 0, cfsi_m);
    }
 
@@ -3584,11 +3687,11 @@ Bool VG_(use_FPO_info) ( /*MOD*/Addr* ipP,
    I don't know what happens when the compiler constructs an outgoing CALL.
    %esp could move if outgoing parameters are PUSHed, and this affects
    traceback for errors during the PUSHes. */
- 
+
    spHere = *spP;
 
    *ipP = ML_(read_Addr)((void *)(spHere + 4*(fpo->cbRegs + fpo->cdwLocals)));
-   *spP =                         spHere + 4*(fpo->cbRegs + fpo->cdwLocals + 1 
+   *spP =                         spHere + 4*(fpo->cbRegs + fpo->cdwLocals + 1
                                                           + fpo->cdwParams);
    *fpP = ML_(read_Addr)((void *)(spHere + 4*2));
    return True;
@@ -3686,7 +3789,7 @@ static Bool data_address_is_in_var ( /*OUT*/PtrdiffT* offset,
       VG_(printf)("\n");
    }
 
-   if (res.kind == GXR_Addr 
+   if (res.kind == GXR_Addr
        && res.word <= data_addr
        && data_addr < res.word + var_szB) {
       *offset = data_addr - res.word;
@@ -3711,7 +3814,7 @@ static void format_message ( /*MOD*/XArray* /* of HChar */ dn1,
                              PtrdiffT var_offset,
                              PtrdiffT residual_offset,
                              const XArray* /*HChar*/ described,
-                             Int      frameNo, 
+                             Int      frameNo,
                              ThreadId tid )
 {
    Bool   have_descr, have_srcloc;
@@ -3780,7 +3883,7 @@ static void format_message ( /*MOD*/XArray* /* of HChar */ dn1,
          p2XA( dn2,
                "in frame #%d of thread %u", frameNo, tid );
       }
-   } 
+   }
    else
    if ( frameNo >= 0 && have_srcloc && (!have_descr) ) {
       /* no description:
@@ -3801,7 +3904,7 @@ static void format_message ( /*MOD*/XArray* /* of HChar */ dn1,
          TXTR( dn2 );
          // FIXME: also do <dir>
          p2XA( dn2,
-               " <file>%pS</file> <line>%d</line> ", 
+               " <file>%pS</file> <line>%d</line> ",
                fileName, var->lineNo );
          XAGR( dn2 );
       } else {
@@ -3838,7 +3941,7 @@ static void format_message ( /*MOD*/XArray* /* of HChar */ dn1,
          p2XA( dn2,
                "in frame #%d of thread %u", frameNo, tid );
       }
-   } 
+   }
    else
    if ( frameNo >= 0 && have_srcloc && have_descr ) {
       /* Location 0x7fefff6cf is 2 bytes inside a[3].xyzzy[21].c2,
@@ -3888,7 +3991,7 @@ static void format_message ( /*MOD*/XArray* /* of HChar */ dn1,
                "Location 0x%lx is %ld byte%s inside global var \"%s\"",
                data_addr, var_offset, vo_plural, var->name );
       }
-   } 
+   }
    else
    if ( frameNo >= -1 && have_srcloc && (!have_descr) ) {
       /* no description:
@@ -3946,7 +4049,7 @@ static void format_message ( /*MOD*/XArray* /* of HChar */ dn1,
          p2XA( dn2,
                "a global variable");
       }
-   } 
+   }
    else
    if ( frameNo >= -1 && have_srcloc && have_descr ) {
       /* Location 0x7fefff6cf is 2 bytes inside a[3].xyzzy[21].c2,
@@ -3979,7 +4082,7 @@ static void format_message ( /*MOD*/XArray* /* of HChar */ dn1,
                fileName, var->lineNo);
       }
    }
-   else 
+   else
       vg_assert(0);
 
    /* Zero terminate both strings */
@@ -4000,7 +4103,7 @@ static void format_message ( /*MOD*/XArray* /* of HChar */ dn1,
    ends of DNAME{1,2}, which are XArray*s of HChar, that have been
    initialised by the caller, zero terminate both, and return True.
    If it's not a local variable in said frame, return False. */
-static 
+static
 Bool consider_vars_in_frame ( /*MOD*/XArray* /* of HChar */ dname1,
                               /*MOD*/XArray* /* of HChar */ dname2,
                               DiEpoch ep,
@@ -4031,7 +4134,7 @@ Bool consider_vars_in_frame ( /*MOD*/XArray* /* of HChar */ dname1,
       if (di->text_avma <= ip && ip < di->text_avma + di->text_size)
          break;
    }
- 
+
    /* Didn't find it.  Strange -- means ip is a code address outside
       of any mapped text segment.  Unlikely but not impossible -- app
       could be generating code to run. */
@@ -4040,7 +4143,7 @@ Bool consider_vars_in_frame ( /*MOD*/XArray* /* of HChar */ dname1,
 
    if (0 && ((n_search & 0x1) == 0))
       VG_(printf)("consider_vars_in_frame: %u searches, "
-                  "%u DebugInfos looked at\n", 
+                  "%u DebugInfos looked at\n",
                   n_search, n_steps);
    /* Start of performance-enhancing hack: once every ??? (chosen
       hackily after profiling) successful searches, move the found
@@ -4070,7 +4173,7 @@ Bool consider_vars_in_frame ( /*MOD*/XArray* /* of HChar */ dname1,
       XArray*      vars;
       Word         j;
       DiAddrRange* arange;
-      OSet*        this_scope 
+      OSet*        this_scope
          = *(OSet**)VG_(indexXA)( di->varinfo, i );
       if (debug)
          VG_(printf)("QQQQ:   considering scope %ld\n", (Word)i);
@@ -4079,7 +4182,7 @@ Bool consider_vars_in_frame ( /*MOD*/XArray* /* of HChar */ dname1,
       /* Find the set of variables in this scope that
          bracket the program counter. */
       arange = VG_(OSetGen_LookupWithCmp)(
-                  this_scope, &ip, 
+                  this_scope, &ip,
                   ML_(cmp_for_DiAddrRange_range)
                );
       if (!arange)
@@ -4111,7 +4214,7 @@ Bool consider_vars_in_frame ( /*MOD*/XArray* /* of HChar */ dname1,
                                      data_addr, di )) {
             PtrdiffT residual_offset = 0;
             XArray* described = ML_(describe_type)( &residual_offset,
-                                                    di->admin_tyents, 
+                                                    di->admin_tyents,
                                                     var->typeR, offset );
             format_message( dname1, dname2,
                             data_addr, di, var, offset, residual_offset,
@@ -4138,7 +4241,7 @@ Bool consider_vars_in_frame ( /*MOD*/XArray* /* of HChar */ dname1,
    using VG_(strlen) on the contents, rather than VG_(sizeXA) on the
    XArray itself.
 */
-Bool VG_(get_data_description)( 
+Bool VG_(get_data_description)(
         /*MOD*/ XArray* /* of HChar */ dname1,
         /*MOD*/ XArray* /* of HChar */ dname2,
         DiEpoch ep, Addr data_addr
@@ -4188,7 +4291,7 @@ Bool VG_(get_data_description)(
       vg_assert(gs_size == 1);
       /* Fish out the global scope and check it is as expected. */
       zero = 0;
-      global_arange 
+      global_arange
          = VG_(OSetGen_Lookup)( global_scope, &zero );
       /* The global range from (Addr)0 to ~(Addr)0 must exist */
       vg_assert(global_arange);
@@ -4211,8 +4314,8 @@ Bool VG_(get_data_description)(
             This means, if the evaluation of the location
             expression/list requires a register, we have to let it
             fail. */
-         if (data_address_is_in_var( &offset, di->admin_tyents, var, 
-                                     NULL/* RegSummary* */, 
+         if (data_address_is_in_var( &offset, di->admin_tyents, var,
+                                     NULL/* RegSummary* */,
                                      data_addr, di )) {
             PtrdiffT residual_offset = 0;
             XArray* described = ML_(describe_type)( &residual_offset,
@@ -4262,7 +4365,7 @@ Bool VG_(get_data_description)(
    for (j = 0; j < n_frames; j++) {
       if (consider_vars_in_frame( dname1, dname2,
                                   ep, data_addr,
-                                  ips[j], 
+                                  ips[j],
                                   sps[j], fps[j], tid, j )) {
          zterm_XA( dname1 );
          zterm_XA( dname2 );
@@ -4289,7 +4392,7 @@ Bool VG_(get_data_description)(
       if (j > 0 /* this is a non-innermost frame */
           && consider_vars_in_frame( dname1, dname2,
                                      ep, data_addr,
-                                     ips[j] + 1, 
+                                     ips[j] + 1,
                                      sps[j], fps[j], tid, j )) {
          zterm_XA( dname1 );
          zterm_XA( dname2 );
@@ -4317,7 +4420,7 @@ Bool VG_(get_data_description)(
    it.  If 'arrays_only' is True, also ignore it unless it has an
    array type. */
 
-static 
+static
 void analyse_deps ( /*MOD*/XArray* /* of FrameBlock */ blocks,
                     const XArray* /* TyEnt */ tyents,
                     Addr ip, const DebugInfo* di, const DiVariable* var,
@@ -4475,7 +4578,7 @@ VG_(di_get_stack_blocks_at_ip)( Addr ip, Bool arrays_only )
       if (di->text_avma <= ip && ip < di->text_avma + di->text_size)
          break;
    }
- 
+
    /* Didn't find it.  Strange -- means ip is a code address outside
       of any mapped text segment.  Unlikely but not impossible -- app
       could be generating code to run. */
@@ -4484,7 +4587,7 @@ VG_(di_get_stack_blocks_at_ip)( Addr ip, Bool arrays_only )
 
    if (0 && ((n_search & 0x1) == 0))
       VG_(printf)("VG_(di_get_stack_blocks_at_ip): %u searches, "
-                  "%u DebugInfos looked at\n", 
+                  "%u DebugInfos looked at\n",
                   n_search, n_steps);
    /* Start of performance-enhancing hack: once every ??? (chosen
       hackily after profiling) successful searches, move the found
@@ -4511,7 +4614,7 @@ VG_(di_get_stack_blocks_at_ip)( Addr ip, Bool arrays_only )
       XArray*      vars;
       Word         j;
       DiAddrRange* arange;
-      OSet*        this_scope 
+      OSet*        this_scope
          = *(OSet**)VG_(indexXA)( di->varinfo, i );
       if (debug)
          VG_(printf)("QQQQ:   considering scope %ld\n", (Word)i);
@@ -4520,7 +4623,7 @@ VG_(di_get_stack_blocks_at_ip)( Addr ip, Bool arrays_only )
       /* Find the set of variables in this scope that
          bracket the program counter. */
       arange = VG_(OSetGen_LookupWithCmp)(
-                  this_scope, &ip, 
+                  this_scope, &ip,
                   ML_(cmp_for_DiAddrRange_range)
                );
       if (!arange)
@@ -4544,7 +4647,7 @@ VG_(di_get_stack_blocks_at_ip)( Addr ip, Bool arrays_only )
       for (j = 0; j < VG_(sizeXA)( vars ); j++) {
          DiVariable* var = (DiVariable*)VG_(indexXA)( vars, j );
          if (debug)
-            VG_(printf)("QQQQ:    var:name=%s %#lx-%#lx %#lx\n", 
+            VG_(printf)("QQQQ:    var:name=%s %#lx-%#lx %#lx\n",
                         var->name,arange->aMin,arange->aMax,ip);
          analyse_deps( res, di->admin_tyents, ip,
                        di, var, arrays_only );
@@ -4704,52 +4807,52 @@ const DebugInfo* VG_(next_DebugInfo)(const DebugInfo* di)
 
 Addr VG_(DebugInfo_get_text_avma)(const DebugInfo* di)
 {
-   return di->text_present ? di->text_avma : 0; 
+   return di->text_present ? di->text_avma : 0;
 }
 
 SizeT VG_(DebugInfo_get_text_size)(const DebugInfo* di)
 {
-   return di->text_present ? di->text_size : 0; 
+   return di->text_present ? di->text_size : 0;
 }
 
 Addr VG_(DebugInfo_get_bss_avma)(const DebugInfo* di)
 {
-   return di->bss_present ? di->bss_avma : 0; 
+   return di->bss_present ? di->bss_avma : 0;
 }
 
 SizeT VG_(DebugInfo_get_bss_size)(const DebugInfo* di)
 {
-   return di->bss_present ? di->bss_size : 0; 
+   return di->bss_present ? di->bss_size : 0;
 }
 
 Addr VG_(DebugInfo_get_plt_avma)(const DebugInfo* di)
 {
-   return di->plt_present ? di->plt_avma : 0; 
+   return di->plt_present ? di->plt_avma : 0;
 }
 
 SizeT VG_(DebugInfo_get_plt_size)(const DebugInfo* di)
 {
-   return di->plt_present ? di->plt_size : 0; 
+   return di->plt_present ? di->plt_size : 0;
 }
 
 Addr VG_(DebugInfo_get_gotplt_avma)(const DebugInfo* di)
 {
-   return di->gotplt_present ? di->gotplt_avma : 0; 
+   return di->gotplt_present ? di->gotplt_avma : 0;
 }
 
 SizeT VG_(DebugInfo_get_gotplt_size)(const DebugInfo* di)
 {
-   return di->gotplt_present ? di->gotplt_size : 0; 
+   return di->gotplt_present ? di->gotplt_size : 0;
 }
 
 Addr VG_(DebugInfo_get_got_avma)(const DebugInfo* di)
 {
-   return di->got_present ? di->got_avma : 0; 
+   return di->got_present ? di->got_avma : 0;
 }
 
 SizeT VG_(DebugInfo_get_got_size)(const DebugInfo* di)
 {
-   return di->got_present ? di->got_size : 0; 
+   return di->got_present ? di->got_size : 0;
 }
 
 const HChar* VG_(DebugInfo_get_soname)(const DebugInfo* di)
@@ -4772,7 +4875,7 @@ Int VG_(DebugInfo_syms_howmany) ( const DebugInfo *si )
    return si->symtab_used;
 }
 
-void VG_(DebugInfo_syms_getidx) ( const DebugInfo *si, 
+void VG_(DebugInfo_syms_getidx) ( const DebugInfo *si,
                                         Int idx,
                                   /*OUT*/SymAVMAs* avmas,
                                   /*OUT*/UInt*     size,
