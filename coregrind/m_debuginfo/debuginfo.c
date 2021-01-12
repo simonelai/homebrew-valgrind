@@ -1352,7 +1352,10 @@ ULong VG_(di_notify_mmap)( Addr a, Bool allow_SkFileV, Int use_fd )
 }
 
 #if defined(VGO_darwin)
-ULong VG_(di_notify_mmap_in_memory)( Addr a, const HChar* filename )
+#include <mach-o/loader.h>
+
+ULong VG_(di_notify_mmap_in_memory)( const HChar * filename, Addr header,
+                                     Addr map_addr, SizeT size )
 {
    NSegment const * seg;
    Bool       is_rx_map, is_rw_map, is_ro_map;
@@ -1362,12 +1365,8 @@ ULong VG_(di_notify_mmap_in_memory)( Addr a, const HChar* filename )
    /* In short, figure out if this mapping is of interest to us, and
       if so, try to guess what ld.so is doing and when/if we should
       read debug info. */
-   seg = VG_(am_find_nsegment)(a);
+   seg = VG_(am_find_nsegment)(map_addr);
    vg_assert(seg);
-
-   filename = VG_(am_get_filename)( seg );
-   if (!filename)
-      return 0;
 
    if (debug) {
       VG_(dmsg)("di_notify_mmap_in_memory-0:\n");
@@ -1410,13 +1409,19 @@ ULong VG_(di_notify_mmap_in_memory)( Addr a, const HChar* filename )
    if (!(is_rx_map || is_rw_map || is_ro_map))
       return 0;
 
-   if (!ML_(is_macho_object_file)( a, sizeof(struct mach_header) ))
+#if VG_WORDSIZE == 4
+#define MACH_HEADER mach_header
+#else
+#define MACH_HEADER mach_header_64
+#endif
+   if (!ML_(is_macho_object_file)( (void*)header, sizeof(struct MACH_HEADER) ))
       return 0;
 
    /* See if we have a DebugInfo for this filename.  If not,
       create one. */
    di = find_or_create_DebugInfo_for( filename );
    vg_assert(di);
+   di->fsm.dyld_cache = header;
 
    if (di->have_dinfo) {
       if (debug)
@@ -1445,13 +1450,23 @@ ULong VG_(di_notify_mmap_in_memory)( Addr a, const HChar* filename )
    di->fsm.have_rw_map |= is_rw_map;
    di->fsm.have_ro_map |= is_ro_map;
 
+   /* So, finally, are we in an accept state? */
    vg_assert(!di->have_dinfo);
-   vg_assert(di->fsm.have_rx_map && di->fsm.have_rw_map);
-
+   if (di->fsm.have_rx_map && di->fsm.have_rw_map) {
+      /* Ok, so, finally, we found what we need, and we haven't
+         already read debuginfo for this object.  So let's do so now.
+         Yee-ha! */
    if (debug)
       VG_(dmsg)("di_notify_mmap_in_memory-5: "
                 "achieved accept state for %s\n", filename);
    return di_notify_ACHIEVE_ACCEPT_STATE ( di );
+   } else {
+      /* If we don't have an rx and rw mapping, go no further. */
+      if (debug)
+         VG_(dmsg)("di_notify_mmap_in_memory-6: "
+                   "no dinfo loaded %s (no rx or no rw mapping)\n", filename);
+      return 0;
+   }
 }
 #endif
 

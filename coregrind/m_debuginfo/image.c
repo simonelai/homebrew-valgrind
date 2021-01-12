@@ -86,10 +86,13 @@ typedef
       // The name.  In ML_(dinfo_zalloc)'d space.  Used only for printing
       // error messages; hence it doesn't really matter what this contains.
       HChar* name;
-      // The rest of these fields are only valid when using remote files
+      // The following fields are only valid when using remote files
       // (that is, using a debuginfo server; hence when is_local==False)
       // Session ID allocated to us by the server.  Cannot be zero.
       ULong session_id;
+      // The following fields are only valid when using in-memory files
+      // (that is, using macOS dyld cache; hence when is_local==True && fd==-1)
+      void* addr;
    }
    Source;
 
@@ -583,8 +586,12 @@ static void set_CEnt ( const DiImage* img, UInt entNo, DiOffT off )
 
    if (img->source.is_local) {
       // Simple: just read it
+      if (img->source.fd == -1) {
+        VG_(memcpy)(&ce->data[0], &(((const char *)img->source.addr)[off]), len);
+      } else {
       SysRes sr = VG_(pread)(img->source.fd, &ce->data[0], (Int)len, off);
       vg_assert(!sr_isError(sr));
+      }
    } else {
       // Not so simple: poke the server
       vg_assert(img->source.session_id > 0);
@@ -875,6 +882,36 @@ DiImage* ML_(img_from_local_file)(const HChar* fullpath)
 }
 
 
+/* Create an image based on already mapped memory.  This is
+   relatively straightforward. */
+DiImage* ML_(img_from_memory)(Addr addr, SizeT size, const HChar * fullpath)
+{
+   /* First off, try to map the thing in. */
+   DiImage* img = ML_(dinfo_zalloc)("di.image.ML_ifm.1", sizeof(DiImage));
+   img->source.is_local = True;
+   img->source.fd       = -1;
+   img->source.addr     = (void*) addr;
+   img->size            = size;
+   img->real_size       = size;
+   img->ces_used        = 0;
+   img->source.name     = ML_(dinfo_strdup)("di.image.ML_ifm.2", fullpath);
+   img->cslc            = NULL;
+   img->cslc_size       = 0;
+   img->cslc_used       = 0;
+
+   /* Force the zeroth entry to be the first chunk of the file.
+      That's likely to be the first part that's requested anyway, and
+      loading it at this point forcing img->cent[0] to always be
+      non-empty, thereby saving us an is-it-empty check on the fast
+      path in get(). */
+   UInt entNo = alloc_CEnt(img, CACHE_ENTRY_SIZE, False/*!fromC*/);
+   vg_assert(entNo == 0);
+   set_CEnt(img, 0, 0);
+
+   return img;
+}
+
+
 /* Create an image from a file on a remote debuginfo server.  This is
    more complex.  There are lots of ways in which it can fail. */
 DiImage* ML_(img_from_di_server)(const HChar* filename,
@@ -1013,7 +1050,9 @@ void ML_(img_done)(DiImage* img)
    if (img->source.is_local) {
       /* Close the file; nothing else to do. */
       vg_assert(img->source.session_id == 0);
+      if (img->source.fd > 0) {
       VG_(close)(img->source.fd);
+      }
    } else {
       /* Close the socket.  The server can detect this and will scrub
          the connection when it happens, so there's no need to tell it

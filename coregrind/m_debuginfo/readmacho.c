@@ -284,6 +284,57 @@ static DiSlice map_image_aboard ( DebugInfo* di, /* only for err msgs */
 }
 
 
+/* Return a DiSlice containing details of a thin part stored in the
+   dyld_cache. Returns DiSlice_INVALID if it fails. If it succeeds, the returned
+   slice is guaranteed to refer to a valid(ish) Mach-O image. */
+static DiSlice map_image_from_memory ( DebugInfo* di, /* only for err msgs */
+                                       Addr addr, const HChar* filename)
+{
+   DiSlice sli = DiSlice_INVALID;
+   struct MACH_HEADER* hdr = (struct MACH_HEADER*) addr;
+   SizeT size = sizeof(struct MACH_HEADER) + hdr->sizeofcmds;
+
+  /* First off, try to map the thing in. */
+   DiImage* mimg = ML_(img_from_memory)(addr, size, filename);
+   if (mimg == NULL) {
+      VG_(message)(Vg_UserMsg, "warning: couldn't read %s\n", filename );
+      VG_(message)(Vg_UserMsg, "         no symbols or debug info loaded\n" );
+      return DiSlice_INVALID;
+   }
+
+   // dyld's cache only contains thin images
+   sli  = ML_(sli_from_img)(mimg);
+   mimg = NULL;
+
+   if (sli.szB < sizeof(struct MACH_HEADER)) {
+      ML_(symerr)(di, True, "Invalid Mach-O file (6 too small).");
+      goto close_and_fail;
+   }
+
+   /* Peer at the Mach header for the thin object, starting at the
+      beginning of the slice, to check it's at least marginally
+      sane. */
+   if (hdr->magic != MAGIC) {
+      ML_(symerr)(di, True, "Invalid Mach-O file (bad magic).");
+      goto close_and_fail;
+   }
+
+   /* "main image is plausible" */
+   vg_assert(sli.img);
+   vg_assert(ML_(img_size)(sli.img) > 0);
+   /* "thin image exists and is a sub-part (or all) of main image" */
+   vg_assert(sli.ioff >= 0);
+   vg_assert(sli.szB > 0);
+   vg_assert(sli.ioff + sli.szB <= ML_(img_size)(sli.img));
+   return sli;  /* success */
+   /*NOTREACHED*/
+
+  close_and_fail:
+   unmap_image(&sli);
+   return DiSlice_INVALID; /* bah! */
+}
+
+
 /*------------------------------------------------------------*/
 /*---                                                      ---*/
 /*--- Mach-O symbol table reading                          ---*/
@@ -735,7 +786,11 @@ Bool ML_(read_macho_debug_info)( struct _DebugInfo* di )
 
    VG_(memset)(&uuid, 0, sizeof(uuid));
 
+   if (di->fsm.dyld_cache) {
+      msli = map_image_from_memory( di, di->fsm.dyld_cache, di->fsm.filename );
+   } else {
    msli = map_image_aboard( di, di->fsm.filename );
+   }
    if (!ML_(sli_is_valid)(msli)) {
       ML_(symerr)(di, False, "Connect to main image failed.");
       goto fail;
@@ -904,6 +959,7 @@ Bool ML_(read_macho_debug_info)( struct _DebugInfo* di )
       XArray* /* DiSym */ candSyms = NULL;
       Word nCandSyms;
 
+      VG_(message)(Vg_DebugMsg, "DEBUG DEBUG %llu vs %u vs %lu\n", msli.szB, symcmd.stroff + symcmd.strsize, symcmd.symoff + symcmd.nsyms * sizeof(struct NLIST));
       if (msli.szB < symcmd.stroff + symcmd.strsize
           || msli.szB < symcmd.symoff + symcmd.nsyms
                                         * sizeof(struct NLIST)) {
@@ -974,6 +1030,12 @@ Bool ML_(read_macho_debug_info)( struct _DebugInfo* di )
       without -g.  Others don't appear to omit it.) */
    if (!have_uuid)
       goto success;
+
+   if (di->fsm.dyld_cache) {
+      // TODO: how to get dwarf if we are using dyld cache?
+      VG_(message)(Vg_DebugMsg, "HOW TO READ DWARF? Early return\n");
+      goto success;
+   }
 
    /* mmap the dSYM file to look for DWARF debug info.  If successful,
       use the .macho_img and .macho_img_szB in dsli. */
