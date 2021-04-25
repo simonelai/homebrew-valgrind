@@ -68,8 +68,9 @@ extern ULong VG_(di_notify_mmap)( Addr a, Bool allow_SkFileV, Int use_fd );
     everything mmap'd and we don't have a matching file on the disk,
     so bypass most the logic and get to loading rightaway
 */
-extern ULong VG_(di_notify_mmap_in_memory)( const HChar * filename, Addr header,
-                                            Addr map_addr, SizeT size );
+extern ULong VG_(di_notify_mmap_in_memory)( const HChar * filename,
+                                            Addr header, SizeT header_size,
+                                            Addr map_addr, SizeT map_size );
 #endif
 
 extern void VG_(di_notify_munmap)( Addr a, SizeT len );

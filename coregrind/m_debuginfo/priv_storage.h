@@ -9,7 +9,7 @@
    This file is part of Valgrind, a dynamic binary instrumentation
    framework.
 
-   Copyright (C) 2000-2017 Julian Seward 
+   Copyright (C) 2000-2017 Julian Seward
       jseward@acm.org
 
    This program is free software; you can redistribute it and/or
@@ -66,7 +66,7 @@
    common case where there is only one name for the address,
    sec_names[] does not need to be allocated.
 */
-typedef 
+typedef
    struct {
       SymAVMAs avmas;    /* Symbol Actual VMAs: lowest address of entity,
                             + platform specific fields, to access with
@@ -438,7 +438,7 @@ typedef
    }
    CfiExprTag;
 
-typedef 
+typedef
    struct {
       CfiExprTag tag;
       union {
@@ -525,7 +525,7 @@ typedef
    }
    DiVariable;
 
-Word 
+Word
 ML_(cmp_for_DiAddrRange_range) ( const void* keyV, const void* elemV );
 
 /* --------------------- DEBUGINFO --------------------- */
@@ -558,7 +558,7 @@ ML_(cmp_for_DiAddrRange_range) ( const void* keyV, const void* elemV );
 
    On MacOSX >= 10.7, 32-bit, there appears to be a new variant:
 
-   start  -->  r-- mapping  -->  rw- mapping  
+   start  -->  r-- mapping  -->  rw- mapping
           -->  upgrade r-- mapping to r-x mapping  -->  accept
 
    where the upgrade is done by a call to mach_vm_protect (OSX 10.7)
@@ -587,8 +587,10 @@ struct _DebugInfoFSM
    Bool  have_rx_map; /* did we see a r?x mapping yet for the file? */
    Bool  have_rw_map; /* did we see a rw? mapping yet for the file? */
    Bool  have_ro_map; /* did we see a r-- mapping yet for the file? */
-#if defined(VGO_darwin)
-   Addr dyld_cache;   /* Address of the code in the dyld cache, override the above */
+#if DARWIN_VERS >= DARWIN_11_00
+   Addr addr;         /* Address of the MachO header in memory, usually copied from dyld_cache
+                         override filename in certain cases */
+   SizeT size;        /* Size of the header */
 #endif
 };
 
@@ -693,12 +695,12 @@ struct _DebugInfo {
       in some obscure circumstances (to do with data/sdata/bss) it is
       possible for the mapping to be present but have zero size.
       Certainly text_ is mandatory on all platforms; not sure about
-      the rest though. 
+      the rest though.
 
       --------------------------------------------------------
 
       Comment_on_IMPORTANT_CFSI_REPRESENTATIONAL_INVARIANTS: we require that
- 
+
       either (size of all rx maps == 0 && cfsi == NULL) (the degenerate case)
 
       or the normal case, which is the AND of the following:
@@ -779,7 +781,7 @@ struct _DebugInfo {
       stored and the other values are used for addresses from other
       places (primarily the symbol table).
 
-      ------ JRS: ------ 
+      ------ JRS: ------
       Ok; so this was my only area of concern.  Are there any
       corner-case scenarios where this wouldn't be right?  It sounds
       like we're assuming the ELF symbols come from the primary object
@@ -969,7 +971,7 @@ struct _DebugInfo {
       a length for each covered range : on x86 or amd64, we typically have
       a hole every 8 covered ranges. On arm64, we have very few holes
       (1 every 50 or 100 ranges).
-      
+
       The cfsi information is read and prepared in the cfsi_rd array.
       Once all the information has been read, the cfsi_base and cfsi_m_ix
       arrays will be filled in from cfsi_rd. cfsi_rd will then be freed.
@@ -986,7 +988,7 @@ struct _DebugInfo {
                        depending on sizeof_cfsi_m_ix.  */
 
    DiCfSI* cfsi_rd; /* Only used during reading, NULL once info is read. */
-                                   
+
    UWord   cfsi_used;
    UWord   cfsi_size;
 
@@ -1023,10 +1025,10 @@ struct _DebugInfo {
       etc contain information on increasinly deeply nested variables.
 
       Each inner array is an array of (an address range, and a set
-      of variables that are in scope over that address range).  
+      of variables that are in scope over that address range).
 
       The address ranges may not overlap.
- 
+
       Since Entry 0 in the outer array holds information on variables
       that exist for any value of the PC (that is, global vars), it
       follows that Entry 0's inner array can only have one address
@@ -1067,7 +1069,7 @@ extern void ML_(addSym) ( struct _DebugInfo* di, DiSym* sym );
 /* Add a filename/dirname pair to a DebugInfo and returns the index
    in the fndnpool fixed pool. */
 extern UInt ML_(addFnDn) (struct _DebugInfo* di,
-                          const HChar* filename, 
+                          const HChar* filename,
                           const HChar* dirname);  /* NULL is allowable */
 
 /* Returns the filename of the fndn pair identified by fndn_ix.
@@ -1088,7 +1090,7 @@ extern UInt ML_(fndn_ix) (const DebugInfo* di, Word locno);
    fndn_ix is an index in di->fndnpool, allocated using  ML_(addFnDn).
    Give a 0 index for a unknown filename/dirname pair. */
 extern
-void ML_(addLineInfo) ( struct _DebugInfo* di, 
+void ML_(addLineInfo) ( struct _DebugInfo* di,
                         UInt fndn_ix,
                         Addr this, Addr next, Int lineno, Int entry);
 
@@ -1103,14 +1105,14 @@ void ML_(addLineInfo) ( struct _DebugInfo* di,
    In case of nested inlining, a small level indicates the call
    is closer to main that a call with a higher level. */
 extern
-void ML_(addInlInfo) ( struct _DebugInfo* di, 
+void ML_(addInlInfo) ( struct _DebugInfo* di,
                        Addr addr_lo, Addr addr_hi,
                        const HChar* inlinedfn,
                        UInt fndn_ix,
                        Int lineno, UShort level);
 
 /* Add a CFI summary record.  The supplied DiCfSI_m is copied. */
-extern void ML_(addDiCfSI) ( struct _DebugInfo* di, 
+extern void ML_(addDiCfSI) ( struct _DebugInfo* di,
                              Addr base, UInt len, DiCfSI_m* cfsi_m );
 
 /* Given a position in the di->cfsi_base/cfsi_m_ix arrays, return
@@ -1185,7 +1187,7 @@ extern DebugInfoMapping* ML_(find_rx_mapping) ( DebugInfo* di,
 /* Show a non-fatal debug info reading error.  Use VG_(core_panic) for
    fatal errors.  'serious' errors are always shown, not 'serious' ones
    are shown only at verbosity level 2 and above. */
-extern 
+extern
 void ML_(symerr) ( const DebugInfo* di, Bool serious, const HChar* msg );
 
 /* Print a symbol. */

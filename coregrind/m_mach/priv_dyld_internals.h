@@ -127,6 +127,21 @@ typedef struct {
   uint64_t    otherTrieSize;          // size of trie of dylibs and bundles with dlopen closures
 } dyld_cache_header;
 
+typedef struct {
+  uint32_t    nlistOffset;        // offset into this chunk of nlist entries
+  uint32_t    nlistCount;         // count of nlist entries
+  uint32_t    stringsOffset;      // offset into this chunk of string pool
+  uint32_t    stringsSize;        // byte count of string pool
+  uint32_t    entriesOffset;      // offset into this chunk of array of dyld_cache_local_symbols_entry
+  uint32_t    entriesCount;       // number of elements in dyld_cache_local_symbols_entry array
+} dyld_cache_local_symbols_info;
+
+typedef struct {
+  uint32_t    dylibOffset;        // offset in cache file of start of dylib
+  uint32_t    nlistStartIndex;    // start index of locals for this dylib
+  uint32_t    nlistCount;         // number of local symbols for this dylib
+} dyld_cache_local_symbols_entry;
+
 // From Apple's `dyld-*/dyld3/Closure.h` (sometimes converted from C++)
 typedef struct {
   uint64_t    cacheOffset : 32,

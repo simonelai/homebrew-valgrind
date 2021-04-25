@@ -90,9 +90,11 @@ typedef
       // (that is, using a debuginfo server; hence when is_local==False)
       // Session ID allocated to us by the server.  Cannot be zero.
       ULong session_id;
+#if DARWIN_VERS >= DARWIN_11_00
       // The following fields are only valid when using in-memory files
       // (that is, using macOS dyld cache; hence when is_local==True && fd==-1)
       void* addr;
+#endif
    }
    Source;
 
@@ -137,8 +139,8 @@ static Bool is_sane_CEnt ( const HChar* who, const DiImage* img, UInt i )
    if (!(ce->used <= ce->size)) goto fail;
    if (ce->fromC) {
       // ce->size can be anything, but ce->used must be either the
-      // same or zero, in the case that it hasn't been set yet.  
-      // Similarly, ce->off must either be above the real_size 
+      // same or zero, in the case that it hasn't been set yet.
+      // Similarly, ce->off must either be above the real_size
       // threshold, or zero if it hasn't been set yet.
       if (!(ce->off >= img->real_size || ce->off == 0)) goto fail;
       if (!(ce->off + ce->used <= img->size)) goto fail;
@@ -431,7 +433,7 @@ static Bool parse_Frame_asciiz ( const Frame* fr, const HChar* tag,
 static Bool parse_Frame_le64_le64_le64_bytes (
                const Frame* fr, const HChar* tag,
                /*OUT*/ULong* n1, /*OUT*/ULong* n2, /*OUT*/ULong* n3,
-               /*OUT*/UChar** data, /*OUT*/ULong* n_data 
+               /*OUT*/UChar** data, /*OUT*/ULong* n_data
             )
 {
    vg_assert(VG_(strlen)(tag) == 4);
@@ -580,18 +582,22 @@ static void set_CEnt ( const DiImage* img, UInt entNo, DiOffT off )
       UInt delay = now - t_last;
       t_last = now;
       nread += len;
-      VG_(printf)("XXXXXXXX (tot %'llu)  read %'lu  offset %'llu  delay %'u\n", 
+      VG_(printf)("XXXXXXXX (tot %'llu)  read %'lu  offset %'llu  delay %'u\n",
                   nread, len, off, delay);
    }
 
    if (img->source.is_local) {
       // Simple: just read it
+#if DARWIN_VERS >= DARWIN_11_00
       if (img->source.fd == -1) {
-        VG_(memcpy)(&ce->data[0], &(((const char *)img->source.addr)[off]), len);
+        VG_(memcpy)(&ce->data[0], ((const char *)img->source.addr) + off, len);
       } else {
-      SysRes sr = VG_(pread)(img->source.fd, &ce->data[0], (Int)len, off);
-      vg_assert(!sr_isError(sr));
+#endif
+        SysRes sr = VG_(pread)(img->source.fd, &ce->data[0], (Int)len, off);
+        vg_assert(!sr_isError(sr));
+#if DARWIN_VERS >= DARWIN_11_00
       }
+#endif
    } else {
       // Not so simple: poke the server
       vg_assert(img->source.session_id > 0);
@@ -653,7 +659,7 @@ static void set_CEnt ( const DiImage* img, UInt entNo, DiOffT off )
      end_of_else_clause:
       {}
    }
-   
+
    ce->off  = off;
    ce->used = len;
    ce->fromC = False;
@@ -853,7 +859,7 @@ DiImage* ML_(img_from_local_file)(const HChar* fullpath)
        || /* size is unrepresentable as a SizeT */
           size != (DiOffT)(SizeT)(size)) {
       VG_(close)(sr_Res(fd));
-      return NULL; 
+      return NULL;
    }
 
    DiImage* img = ML_(dinfo_zalloc)("di.image.ML_iflf.1", sizeof(DiImage));
@@ -908,6 +914,8 @@ DiImage* ML_(img_from_memory)(Addr addr, SizeT size, const HChar * fullpath)
    vg_assert(entNo == 0);
    set_CEnt(img, 0, 0);
 
+   // TODO: we could cache the whole thing instantly by just adding it to CE directly
+
    return img;
 }
 
@@ -936,7 +944,7 @@ DiImage* ML_(img_from_di_server)(const HChar* filename,
    if (!set_blocking(sd))
       return NULL;
    Int one = 1;
-   Int sr = VG_(setsockopt)(sd, VKI_IPPROTO_TCP, VKI_TCP_NODELAY, 
+   Int sr = VG_(setsockopt)(sd, VKI_IPPROTO_TCP, VKI_TCP_NODELAY,
                             &one, sizeof(one));
    vg_assert(sr == 0);
 

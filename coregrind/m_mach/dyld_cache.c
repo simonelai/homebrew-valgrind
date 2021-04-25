@@ -42,18 +42,23 @@
 #include "pub_tool_libcbase.h"              // VG_(strncmp)
 #include "pub_tool_libcprint.h"             // VG_(dmsg)
 #include "pub_tool_libcfile.h"              // VG_(stat)
+#include "pub_tool_mallocfree.h"            // VG_(malloc)(), VG_(free)()
 #include "vki/vki-scnums-darwin.h"          // __NR_shared_region_check_np
 #include "priv_dyld_internals.h"            // CACHE_MAGIC_*, dyld_cache_header
 
 // FIXME: probably shouldn't include this directly?
+#include "m_aspacemgr/priv_aspacemgr.h" // ML_(am_do_munmap_NO_NOTIFY)
 #include "m_syswrap/priv_syswrap-generic.h" // ML_(notify_core_and_tool_of_mmap)
 
 #include <mach-o/loader.h>
+#include <mach-o/nlist.h>
 
 // Only supported on macOS 11 onwards which is 64bit only
 # define MACH_HEADER mach_header_64
 # define LC_SEGMENT_CMD LC_SEGMENT_64
 # define SEGMENT_COMMAND segment_command_64
+# define SECTION section_64
+# define NLIST nlist_64
 
 typedef struct {
   const dyld_cache_header* header;
@@ -62,6 +67,10 @@ typedef struct {
   int has_image_array;
   const dyld_cache_image_info* images_old;
   const DyldImageArray* images_new;
+  const dyld_cache_local_symbols_info* local_syms_info;
+  const dyld_cache_local_symbols_entry* local_syms_entries;
+  const struct NLIST* local_nlists;
+  const char* local_strings;
 } DYLDCache;
 
 static DYLDCache dyld_cache = {
@@ -69,6 +78,12 @@ static DYLDCache dyld_cache = {
   .slide = 0,
   .mappings = NULL,
   .has_image_array = 0,
+  .images_old = NULL,
+  .images_new = NULL,
+  .local_syms_info = NULL,
+  .local_syms_entries = NULL,
+  .local_nlists = NULL,
+  .local_strings = NULL,
 };
 
 // This file is inspired by Apple's dyld sources:
@@ -162,6 +177,13 @@ static int try_to_init(void) {
       //   VKI_PROT_READ, VKI_MAP_ANON, -1, 0
       // );
     }
+  }
+
+  if (dyld_cache.header->localSymbolsOffset != 0 && dyld_cache.header->mappingOffset > offsetof(dyld_cache_header, localSymbolsSize)) {
+    dyld_cache.local_syms_info = (const dyld_cache_local_symbols_info*) ((Addr) dyld_cache.header + dyld_cache.header->localSymbolsOffset);
+    dyld_cache.local_syms_entries = (const dyld_cache_local_symbols_entry*) ((Addr) dyld_cache.local_syms_info + dyld_cache.local_syms_info->entriesOffset);
+    dyld_cache.local_nlists = (const struct NLIST*) ((Addr) dyld_cache.local_syms_info + dyld_cache.local_syms_info->nlistOffset);
+    dyld_cache.local_strings = (const char*) ((Addr) dyld_cache.local_syms_info + dyld_cache.local_syms_info->stringsOffset);
   }
 
   // TODO: mark the rest of the structure as accessible?
@@ -421,33 +443,196 @@ static const void* get_image_attribute(const DyldImage* image, DyldImageTypeAttr
 }
 
 static void track_macho_file(const HChar * path, Addr addr) {
-  VG_(debugLog)(2, "dyld_cache", "found an image (%s) at %#lx\n", path, addr);
-  const struct MACH_HEADER* hdr = (const struct MACH_HEADER *) addr;
-  const vki_uint8_t * hdrbuf = (const vki_uint8_t *) addr;
-  const struct load_command *lc, *lcend;
-  const struct SEGMENT_COMMAND *segcmd;
-  Addr seg_addr = 0;
-  SizeT seg_size;
-  SysRes res;
+  int i = 0, j = 0;
 
-  // FIXME: would prefer to actually have the filename set on the created aspace segment
-  // However we don't have an associated fd...
-  ML_(notify_core_and_tool_of_mmap)(
-    addr, sizeof(struct MACH_HEADER),
-    VKI_PROT_READ | VKI_PROT_EXEC, VKI_MAP_ANON, -1, 0
-  );
+  {
+    const struct MACH_HEADER* hdr = (const struct MACH_HEADER *) addr;
 
-  VG_(debugLog)(3, "dyld_cache", "looking up __TEXT, __DATA and LC_UUID...\n");
-  lcend = (const struct load_command *)(hdrbuf + hdr->sizeofcmds + sizeof(struct MACH_HEADER));
-  for (lc = (const struct load_command *)(hdrbuf + sizeof(struct MACH_HEADER));
-        lc < lcend;
-        lc = (const struct load_command *)(lc->cmdsize + (const vki_uint8_t *)lc))
-    {
-      if ((const vki_uint8_t *)lc < hdrbuf  ||
-          lc->cmdsize+(const vki_uint8_t *)lc > (const vki_uint8_t *)lcend) {
+    VG_(debugLog)(2, "dyld_cache", "found an image (%s) at %#lx\n", path, addr);
+    // FIXME: would prefer to actually have the filename set on the created aspace segment
+    // However we don't have an associated fd...
+    ML_(notify_core_and_tool_of_mmap)(
+      addr, sizeof(struct MACH_HEADER) + hdr->sizeofcmds,
+      VKI_PROT_READ, VKI_MAP_ANON, -1, 0
+    );
+  }
+
+  const struct NLIST* local_nlists = NULL;
+  SizeT local_nlists_size = 0;
+  SizeT size = 0, le_size = 0, syms_count = 0, strpool_size = 0;
+  {
+    const struct load_command * lc = (const struct load_command *) (addr + sizeof(struct MACH_HEADER));
+
+    VG_(debugLog)(3, "dyld_cache", "calculating copy's size...\n");
+    for (i = 0; i < ((const struct MACH_HEADER *) addr)->ncmds; ++i) {
+      switch (lc->cmd) {
+      case LC_SEGMENT_CMD:
+        if (lc->cmdsize < sizeof(struct SEGMENT_COMMAND)) {
           VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
           return;
+        }
+        const struct SEGMENT_COMMAND *segcmd = (const struct SEGMENT_COMMAND *) lc;
+        if (0 != VG_(strcmp)(segcmd->segname, "__LINKEDIT")) {
+          size += segcmd->filesize;
+        }
+        if (0 == VG_(strcmp)(segcmd->segname, "__TEXT")) {
+          if (dyld_cache.local_syms_info != NULL) {
+            for (j = 0; j < dyld_cache.local_syms_info->entriesCount; ++j) {
+              const dyld_cache_local_symbols_entry* entry = &dyld_cache.local_syms_entries[i];
+              if (entry->dylibOffset == segcmd->fileoff) {
+                local_nlists = &dyld_cache.local_nlists[entry->nlistStartIndex];
+                local_nlists_size = entry->nlistCount;
+                break;
+              }
+            }
+          }
+        }
+        break;
+
+      case LC_DATA_IN_CODE:
+      case LC_FUNCTION_STARTS:
+        if (lc->cmdsize < sizeof(struct linkedit_data_command)) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        const struct linkedit_data_command * le = (const struct linkedit_data_command *) lc;
+        le_size += le->datasize;
+        le_size = VG_ROUNDUP(le_size, sizeof(uint_t));
+        break;
+
+      case LC_SYMTAB:
+        if (lc->cmdsize < sizeof(struct symtab_command)) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        const struct symtab_command *symtab = (const struct symtab_command *) lc;
+        const struct NLIST* s = NULL;
+        const struct NLIST* syms_start = (struct NLIST*) ((Addr) dyld_cache.header + symtab->symoff);
+        const struct NLIST* syms_end = &syms_start[symtab->nsyms];
+        syms_count = symtab->nsyms;
+        if (local_nlists_size != 0) {
+          syms_count = local_nlists_size;
+          for (s = syms_start; s != syms_end; ++s) {
+            if ((s->n_type & (N_TYPE|N_EXT)) == N_SECT) {
+              continue;
+            }
+            ++syms_count;
+          }
+        }
+        // FIXME: extremely hacky but allows to avoid iterating over all symbols twice, might break catastrophically later
+        strpool_size = syms_count * PATH_MAX + 1;
+        strpool_size = VG_ROUNDUP(strpool_size, sizeof(uint_t));
+        le_size += syms_count * sizeof(struct NLIST) + strpool_size;
+        break;
+
+      case LC_DYSYMTAB:
+        if (lc->cmdsize < sizeof(struct dysymtab_command)) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        const struct dysymtab_command *dysymtab = (const struct dysymtab_command *) lc;
+        le_size += dysymtab->nindirectsyms;
+
+      case LC_REEXPORT_DYLIB:
+        // FIXME: finish exports symbols
+        // exports_size += 1;
+        break;
+
+      case LC_UUID: {
+        if (lc->cmdsize < sizeof(struct uuid_command)) {
+          VG_(dmsg)("bad executable (invalid command): %s\n", path);
+          return;
+        }
+        const struct uuid_command* uuidcmd = (const struct uuid_command *) lc;
+        const UChar* uuid = uuidcmd->uuid;
+        VG_(debugLog)(3, "dyld_cache", "found UUID: %02X%02X%02X%02X"
+          "-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+          (UInt)uuid[0], (UInt)uuid[1], (UInt)uuid[2], (UInt)uuid[3],
+          (UInt)uuid[4], (UInt)uuid[5], (UInt)uuid[6], (UInt)uuid[7],
+          (UInt)uuid[8], (UInt)uuid[9], (UInt)uuid[10],
+          (UInt)uuid[11], (UInt)uuid[12], (UInt)uuid[13],
+          (UInt)uuid[14], (UInt)uuid[15]
+        );
+        break;
       }
+      }
+      lc = (const struct load_command *) ((Addr) lc + lc->cmdsize);
+    }
+
+    size += le_size;
+  }
+
+  // Make a copy of the image in memory...
+  Addr macho_map;
+  {
+    Addr offset = 0;
+    SysRes res;
+    const struct load_command * lc = (const struct load_command *) (addr + sizeof(struct MACH_HEADER));
+
+    size = VG_PGROUNDUP(size);
+    VG_(debugLog)(3, "dyld_cache", "making copy (%lu bytes)...\n", size);
+    res = VG_(am_do_mmap_NO_NOTIFY)(0, size, VKI_PROT_READ | VKI_PROT_WRITE, VKI_MAP_ANON, -1, 0);
+    if (sr_isError(res)) {
+      VG_(printf)("valgrind: mmap(%lu) failed in dyld cache (Mach-O) "
+                  "with error %lu (%s).\n",
+                  size,
+                  sr_Err(res), VG_(strerror)(sr_Err(res)));
+      VG_(exit)(1);
+    }
+    macho_map = sr_Res(res);
+
+    // From dyld-*/launch-cache/dsc_extractor.cpp
+    // Copy all segments but __LINKEDIT, which is handled separately
+    VG_(debugLog)(3, "dyld_cache", "copying segments...\n");
+    for (i = 0; i < ((const struct MACH_HEADER *) addr)->ncmds; ++i) {
+      switch (lc->cmd) {
+      case LC_SEGMENT_CMD:
+        if (lc->cmdsize < sizeof(struct SEGMENT_COMMAND)) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        const struct SEGMENT_COMMAND *segcmd = (const struct SEGMENT_COMMAND *) lc;
+
+        if (0 == VG_(strcmp)(segcmd->segname, "__LINKEDIT")) {
+          continue;
+        }
+
+        VG_(memcpy)((void*) (macho_map + offset), (const void*) ((Addr) dyld_cache.header + segcmd->fileoff), segcmd->filesize);
+        VG_(debugLog)(4, "dyld_cache", "copying SEGMENT_CMD to %lx (%llu bytes)\n", offset, segcmd->filesize);
+        offset += segcmd->filesize;
+        break;
+      }
+      lc = (const struct load_command *) ((Addr) lc + lc->cmdsize);
+    }
+  }
+
+  // ... then fix it up so that it looks like it was actually loaded from file
+  // Also copy the linkedit data
+  const struct SEGMENT_COMMAND *seg_text, *seg_data;
+  struct SEGMENT_COMMAND *seg_edit;
+  {
+    struct MACH_HEADER* mh = (struct MACH_HEADER*) macho_map;
+    Addr le_offset = 0;
+    SizeT cumulative_size = 0;
+    SizeT remaining_bytes = mh->sizeofcmds;
+    SizeT removed_commands = 0;
+
+    // FIXME: finish exports symbols
+    // SizeT dep_index = 0;
+    // SizeT exports_index = 0;
+    // Addr exports_trie_off = 0;
+    // SizeT exports_trie_size = 0;
+    // // FIXME: might leak
+    // SizeT* exports = VG_(malloc) ("dyld_cache.tmf.exp", sizeof(SizeT) * exports_size);
+
+    struct load_command * lc = (struct load_command *) ((Addr) mh + sizeof(*mh));
+
+    mh->flags &= 0x7FFFFFFF;
+
+    VG_(debugLog)(3, "dyld_cache", "fixing up copy\n");
+    // From dyld-*/launch-cache/dsc_extractor.cpp
+    for (i = 0; i < mh->ncmds; ++i) {
+      int remove = 0;
 
       switch (lc->cmd) {
       case LC_SEGMENT_CMD:
@@ -455,64 +640,307 @@ static void track_macho_file(const HChar * path, Addr addr) {
           VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
           return;
         }
-        segcmd = (const struct SEGMENT_COMMAND *)lc;
-        seg_addr = segcmd->vmaddr + dyld_cache.slide;
-        seg_size = segcmd->vmsize;
+        struct SEGMENT_COMMAND *segcmd = (struct SEGMENT_COMMAND *) lc;
 
-        if (0 == VG_(strcmp)(segcmd->segname, SEG_TEXT)) {
-          VG_(debugLog)(3, "dyld_cache", "tracking __TEXT (%#lx, %#lx)\n", seg_addr, seg_size);
-          // ML_(notify_core_and_tool_of_mmap)(
-          //   seg_addr, seg_size,
-          //   VKI_PROT_READ | VKI_PROT_EXEC, VKI_MAP_ANON, -1, 0
-          // );
+        segcmd->fileoff = cumulative_size;
+        segcmd->filesize = segcmd->vmsize;
 
-          res = VG_(am_mmap_named_file_fixed_client_flags)(
-            seg_addr, seg_size,
-            VKI_PROT_READ | VKI_PROT_EXEC,
-            VKI_MAP_FIXED | VKI_MAP_PRIVATE | VKI_MAP_ANONYMOUS,
-            0, segcmd->fileoff, path
-          );
-          if (sr_isError(res)) {
-            VG_(printf)("valgrind: mmap-FIXED(0x%llx, %lld) failed in dyld cache (__TEXT) "
-                        "with error %lu (%s).\n",
-                        (ULong)seg_addr, (Long)seg_size,
-                        sr_Err(res), VG_(strerror)(sr_Err(res)) );
-            VG_(exit)(1);
-          }
-
-          VG_(di_notify_mmap_in_memory)(path, addr, seg_addr, seg_size);
-        } else if (0 == VG_(strcmp)(segcmd->segname, SEG_DATA)) {
-          VG_(debugLog)(3, "dyld_cache", "tracking __DATA (%#lx, %#lx)\n", seg_addr, seg_size);
-
-          if (!VG_IS_PAGE_ALIGNED(seg_addr)) {
-            VG_(dmsg)("__DATA segment for %s is not page-aligned (%#lx)\n", path, seg_addr);
-          } else {
-            // TODO: redo like __TEXT?
-            ML_(notify_core_and_tool_of_mmap)(
-              seg_addr, seg_size,
-              VKI_PROT_READ | VKI_PROT_WRITE, VKI_MAP_ANON, -1, 0
-            );
-
-            VG_(di_notify_mmap_in_memory)(path, addr, seg_addr, seg_size);
+        struct SECTION *section = (struct SECTION *) ((Addr) segcmd + sizeof(*segcmd));
+        struct SECTION *end = &section[segcmd->nsects];
+        for (; section < end; ++section) {
+          if (section->offset != 0) {
+            section->offset = cumulative_size + section->addr - segcmd->vmaddr;
           }
         }
 
+        if (0 == VG_(strcmp)(segcmd->segname, "__LINKEDIT")) {
+          VG_(debugLog)(3, "dyld_cache", "found __LINKEDIT\n");
+          seg_edit = segcmd;
+        } else if (0 == VG_(strcmp)(segcmd->segname, "__TEXT")) {
+          VG_(debugLog)(3, "dyld_cache", "found __TEXT\n");
+          seg_text = segcmd;
+        } else if (0 == VG_(strcmp)(segcmd->segname, "__DATA")) {
+          VG_(debugLog)(3, "dyld_cache", "found __DATA\n");
+          seg_data = segcmd;
+        }
+
+        cumulative_size += segcmd->filesize;
+      break;
+
+      case LC_DYLD_INFO_ONLY:
+        if (lc->cmdsize < sizeof(struct dyld_info_command)) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        struct dyld_info_command *dyldcmd = (struct dyld_info_command *) lc;
+        // FIXME: finish exports symbols
+        // exports_trie_off = dyldcmd->export_off;
+        // exports_trie_size = dyldcmd->export_size;
+        dyldcmd->rebase_off = 0;
+        dyldcmd->rebase_size = 0;
+        dyldcmd->bind_off = 0;
+        dyldcmd->bind_size = 0;
+        dyldcmd->weak_bind_off = 0;
+        dyldcmd->weak_bind_size = 0;
+        dyldcmd->lazy_bind_off = 0;
+        dyldcmd->lazy_bind_size = 0;
+        dyldcmd->export_off = 0;
+        dyldcmd->export_size = 0;
         break;
-      case LC_UUID: {
-        const struct uuid_command* uuidcmd = (const struct uuid_command *)lc;
-        const UChar* uuid = uuidcmd->uuid;
-        VG_(debugLog)(3, "dyld_cache", "found UUID: %02X%02X%02X%02X"
-        "-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
-        (UInt)uuid[0], (UInt)uuid[1], (UInt)uuid[2], (UInt)uuid[3],
-        (UInt)uuid[4], (UInt)uuid[5], (UInt)uuid[6], (UInt)uuid[7],
-        (UInt)uuid[8], (UInt)uuid[9], (UInt)uuid[10],
-        (UInt)uuid[11], (UInt)uuid[12], (UInt)uuid[13],
-        (UInt)uuid[14], (UInt)uuid[15]
-        );
+
+      case LC_DYLD_EXPORTS_TRIE: {
+        if (lc->cmdsize < sizeof(struct linkedit_data_command)) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        struct linkedit_data_command *le = (struct linkedit_data_command *) lc;
+        // FIXME: finish exports symbols
+        // exports_trie_off = le->dataoff;
+        // exports_trie_size = le->datasize;
+        le->dataoff = 0;
+        le->datasize = 0;
         break;
       }
+
+      case LC_SYMTAB:
+        if (lc->cmdsize < sizeof(struct symtab_command)) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        struct symtab_command *symtab = (struct symtab_command *) lc;
+
+        const struct NLIST* s = 0;
+        const struct NLIST* syms_start = (struct NLIST*) ((Addr) dyld_cache.header + symtab->symoff);
+        const struct NLIST* syms_end = &syms_start[symtab->nsyms];
+        const char* strings_start = (const char*) ((Addr) dyld_cache.header + symtab->stroff);
+        const char* strings_end = &strings_start[symtab->strsize];
+
+        Addr syms_offset = macho_map + le_offset;
+        struct NLIST* sym_index = (struct NLIST*) syms_offset;
+
+        Addr strpool_offset = syms_offset + syms_count * sizeof(struct NLIST);
+        SizeT str_offset = 1;
+        VG_(memset)((void *) strpool_offset, '\0', strpool_size);
+        VG_(debugLog)(3, "dyld_cache", "syms_start\n");
+
+        for (s = syms_start; s != syms_end; ++s) {
+          VG_(debugLog)(3, "dyld_cache", "loop: %p\n", s);
+          if (local_nlists != NULL && (s->n_type & (N_TYPE|N_EXT)) == N_SECT) {
+            continue;
+          }
+          VG_(debugLog)(3, "dyld_cache", "/if\n");
+
+          VG_(memcpy)(sym_index, s, sizeof(*s));
+          sym_index->n_un.n_strx = str_offset;
+          VG_(debugLog)(3, "dyld_cache", "copied\n");
+
+          SizeT len = 0;
+          const char* symName = &strings_start[s->n_un.n_strx];
+          if (symName > strings_end) {
+            symName = "<corrupt symbol name>";
+          }
+          VG_(debugLog)(3, "dyld_cache", "sym\n");
+          len = VG_(strlen)(symName) + 1;
+          if (str_offset + len > strpool_size) {
+            VG_(dmsg)("bad executable (invalid strings): %s\n", path);
+            return;
+          }
+          VG_(debugLog)(3, "dyld_cache", "oooocppyy\n");
+          VG_(memcpy)((void *) (strpool_offset + str_offset), symName, len);
+          VG_(debugLog)(3, "dyld_cache", "'d\n");
+          str_offset += len;
+            VG_(debugLog)(3, "dyld_cache", "inc\n");
+          ++sym_index;
+          if ((Addr) sym_index >= strpool_offset) {
+            VG_(dmsg)("bad executable (invalid symbols): %s\n", path);
+            return;
+          }
+            VG_(debugLog)(3, "dyld_cache", "done\n");
+        }
+        VG_(debugLog)(3, "dyld_cache", "local_nlists_size\n");
+
+        for (j = 0; j < local_nlists_size; ++j) {
+          VG_(memcpy)(sym_index, &local_nlists[j], sizeof(*local_nlists));
+          sym_index->n_un.n_strx = str_offset;
+
+          const char* localName = &dyld_cache.local_strings[local_nlists[i].n_un.n_strx];
+          if (localName > dyld_cache.local_strings + dyld_cache.local_syms_info->stringsSize) {
+            localName = "<corrupt local symbol name>";
+          }
+          SizeT len = VG_(strlen)(localName) + 1;
+          if (str_offset + len > strpool_size) {
+            VG_(dmsg)("bad executable (invalid strings): %s\n", path);
+            return;
+          }
+          VG_(memcpy)((void *) (strpool_offset + str_offset), localName, len);
+          str_offset += len;
+          ++sym_index;
+          if ((Addr) sym_index >= strpool_offset) {
+            VG_(dmsg)("bad executable (invalid symbols): %s\n", path);
+            return;
+          }
+        }
+
+        VG_(debugLog)(3, "dyld_cache", "SYMTAB\n");
+
+        symtab->symoff = syms_offset;
+        symtab->nsyms = syms_count;
+        symtab->stroff = strpool_offset;
+        symtab->strsize = strpool_size;
+        seg_edit->filesize = symtab->stroff + symtab->strsize - seg_edit->fileoff;
+        seg_edit->vmsize = (seg_edit->filesize + 4095) & (-4096); // FIXME: VG_ROUNDUP?
+
+        le_offset += syms_count * sizeof(struct NLIST) + strpool_size;
+        VG_(debugLog)(3, "dyld_cache", "END\n");
+        break;
+
+      case LC_DYSYMTAB:
+        if (lc->cmdsize < sizeof(struct dysymtab_command)) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        if (seg_edit == 0) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        struct dysymtab_command *dysymtab = (struct dysymtab_command *) lc;
+        if (local_nlists_size != 0) {
+          dysymtab->ilocalsym = syms_count;
+          dysymtab->nlocalsym = local_nlists_size;
+        }
+        dysymtab->extreloff = 0;
+        dysymtab->nextrel = 0;
+        dysymtab->locreloff = 0;
+        dysymtab->nlocrel = 0;
+        dysymtab->indirectsymoff = seg_edit->fileoff + le_offset;
+
+        if (seg_edit->fileoff + le_offset + dysymtab->nindirectsyms > size) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        VG_(memcpy)((void*) (macho_map + seg_edit->fileoff + le_offset), (void*) ((Addr) dyld_cache.header + dysymtab->indirectsymoff), dysymtab->nindirectsyms);
+        VG_(debugLog)(4, "dyld_cache", "copying DYSYMTAB to %llx (%d bytes)\n", seg_edit->fileoff + le_offset, dysymtab->nindirectsyms);
+        le_offset += dysymtab->nindirectsyms;
+        break;
+
+      case LC_FUNCTION_STARTS:
+      case LC_DATA_IN_CODE: {
+        if (lc->cmdsize < sizeof(struct linkedit_data_command)) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        if (seg_edit == 0) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        struct linkedit_data_command * le = (struct linkedit_data_command *) lc;
+        le->dataoff = seg_edit->fileoff + le_offset;
+        if (seg_edit->fileoff + le_offset + le->datasize > size) {
+          VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+          return;
+        }
+        VG_(memcpy)((void*) (macho_map + seg_edit->fileoff + le_offset), (void*) ((Addr) dyld_cache.header + le->dataoff), le->datasize);
+        VG_(debugLog)(4, "dyld_cache", "copying FUNCTION_STARTS/DATA_IN_CODE to %llx (%d bytes)\n", seg_edit->fileoff + le_offset, le->datasize);
+        le_offset += le->datasize;
+        break;
+      }
+
+      case LC_REEXPORT_DYLIB:
+      case LC_LOAD_DYLIB:
+      case LC_LOAD_WEAK_DYLIB:
+      case LC_LOAD_UPWARD_DYLIB:
+        // FIXME: finish exports symbols
+        // ++dep_index;
+        // if (lc->cmd == LC_REEXPORT_DYLIB) {
+        //   if (exports_index >= exports_size) {
+        //     VG_(dmsg)("bad executable (invalid load commands): %s\n", path);
+        //     return;
+        //   }
+        //   exports[exports_index++] = dep_index;
+        // }
+        break;
+
+      case LC_SEGMENT_SPLIT_INFO:
+        remove = 1;
+        break;
+      }
+
+      // Check if we need to delete the current command
+      struct load_command * next = (struct load_command *) ((Addr) lc + lc->cmdsize);
+      if (remove) {
+        VG_(memmove)((void*) lc, (void*) next, remaining_bytes);
+        VG_(debugLog)(4, "dyld_cache", "moving %lx to %lx (%lu bytes)\n", (Addr) next - macho_map, (Addr) lc - macho_map, remaining_bytes);
+        removed_commands += 1;
+      } else {
+        remaining_bytes -= lc->cmdsize;
+        lc = next;
+      }
     }
+
+    // Removed delete parts from the header
+    VG_(memset)((void*) lc, 0, remaining_bytes);
+    VG_(debugLog)(4, "dyld_cache", "zeroing %lx (%lu bytes)\n", (Addr) lc - macho_map, remaining_bytes);
+    mh->ncmds = mh->ncmds - removed_commands;
+    mh->sizeofcmds = mh->sizeofcmds - remaining_bytes;
+
+    // TODO: process exports using:
+    //  - exports_index as the size of exports, indicating the exports to keep
+    //  - exports_trie_off/size defining the trie containing the exports
+    //  - extract a definite list of the exports, get the size, copy it in syms/strs
+
+    // FIXME: finish exports symbols
+    // VG_(free)(exports);
+
+    // TODO: DEBUG REMOVE
+    VG_(debugLog)(3, "dyld_cache", "writing debug...\n");
+    SysRes res = VG_(open)("./fake.dylib", VKI_O_CREAT|VKI_O_WRONLY|VKI_O_TRUNC, VKI_S_IRUSR|VKI_S_IWUSR);
+    VG_(write)(sr_Res(res), (void*) macho_map, size);
+    VG_(exit)(1);
   }
+
+  if (seg_text == 0 || seg_data == 0) {
+    VG_(dmsg)("bad executable (missing segments): %s\n", path);
+    return;
+  }
+
+  // Pass the __TEXT from dyld_cache directly
+  {
+    Addr text_addr = macho_map + seg_text->fileoff;
+    ML_(notify_core_and_tool_of_mmap)(
+      text_addr, seg_text->filesize,
+      VKI_PROT_READ | VKI_PROT_EXEC, VKI_MAP_ANON, -1, 0
+    );
+    VG_(di_notify_mmap_in_memory)(
+      path, macho_map, size,
+      text_addr, seg_text->filesize
+    );
+  }
+
+  // Copy the __DATA so it can be made rw
+  {
+    SysRes res = VG_(am_do_mmap_NO_NOTIFY)(0, seg_data->filesize, VKI_PROT_READ | VKI_PROT_WRITE, VKI_MAP_ANON, -1, 0);
+    if (sr_isError(res)) {
+      VG_(printf)("valgrind: mmap(%lld) failed in dyld cache (__DATA) "
+                  "with error %lu (%s).\n",
+                  seg_data->filesize,
+                  sr_Err(res), VG_(strerror)(sr_Err(res)));
+      VG_(exit)(1);
+    }
+    Addr data_map = sr_Res(res);
+    VG_(memcpy)((void*) data_map, (const void *) (macho_map + seg_data->fileoff), seg_data->filesize);
+
+    ML_(notify_core_and_tool_of_mmap)(
+      data_map, seg_data->filesize,
+      VKI_PROT_READ | VKI_PROT_WRITE, VKI_MAP_ANON, -1, 0
+    );
+    VG_(di_notify_mmap_in_memory)(
+      path, macho_map, size,
+      data_map, seg_data->filesize
+    );
+  }
+
+  // Unmap the header as all relevant data should have been copied now
+  (void)ML_(am_do_munmap_NO_NOTIFY)(macho_map, size);
 }
 
 int VG_(dyld_cache_check_and_register)(const HChar* path) {

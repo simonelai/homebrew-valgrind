@@ -1354,8 +1354,9 @@ ULong VG_(di_notify_mmap)( Addr a, Bool allow_SkFileV, Int use_fd )
 #if defined(VGO_darwin)
 #include <mach-o/loader.h>
 
-ULong VG_(di_notify_mmap_in_memory)( const HChar * filename, Addr header,
-                                     Addr map_addr, SizeT size )
+ULong VG_(di_notify_mmap_in_memory)( const HChar * filename,
+                                     Addr header, SizeT header_size,
+                                     Addr map_addr, SizeT map_size )
 {
    NSegment const * seg;
    Bool       is_rx_map, is_rw_map, is_ro_map;
@@ -1414,14 +1415,16 @@ ULong VG_(di_notify_mmap_in_memory)( const HChar * filename, Addr header,
 #else
 #define MACH_HEADER mach_header_64
 #endif
-   if (!ML_(is_macho_object_file)( (void*)header, sizeof(struct MACH_HEADER) ))
+   if (!ML_(is_macho_object_file)( (void*)header, header_size ))
       return 0;
 
    /* See if we have a DebugInfo for this filename.  If not,
       create one. */
    di = find_or_create_DebugInfo_for( filename );
    vg_assert(di);
-   di->fsm.dyld_cache = header;
+   // TODO: can't find a better way to pass it and set it everytime...
+   di->fsm.addr = header;
+   di->fsm.size = header_size;
 
    if (di->have_dinfo) {
       if (debug)
