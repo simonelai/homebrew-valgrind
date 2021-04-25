@@ -457,6 +457,7 @@ static void track_macho_file(const HChar * path, Addr addr) {
     );
   }
 
+  Addr linkEditBase = 0;
   const struct NLIST* local_nlists = NULL;
   SizeT local_nlists_size = 0;
   SizeT size = 0, le_size = 0, syms_count = 0, strpool_size = 0;
@@ -474,6 +475,8 @@ static void track_macho_file(const HChar * path, Addr addr) {
         const struct SEGMENT_COMMAND *segcmd = (const struct SEGMENT_COMMAND *) lc;
         if (0 != VG_(strcmp)(segcmd->segname, "__LINKEDIT")) {
           size += segcmd->filesize;
+        } else {
+          linkEditBase = segcmd->vmaddr + dyld_cache.slide - segcmd->fileoff;
         }
         if (0 == VG_(strcmp)(segcmd->segname, "__TEXT")) {
           if (dyld_cache.local_syms_info != NULL) {
@@ -520,7 +523,7 @@ static void track_macho_file(const HChar * path, Addr addr) {
           }
         }
         // FIXME: extremely hacky but allows to avoid iterating over all symbols twice, might break catastrophically later
-        strpool_size = syms_count * PATH_MAX + 1;
+        strpool_size = syms_count * 255 + 1;
         strpool_size = VG_ROUNDUP(strpool_size, sizeof(uint_t));
         le_size += syms_count * sizeof(struct NLIST) + strpool_size;
         break;
@@ -595,6 +598,13 @@ static void track_macho_file(const HChar * path, Addr addr) {
 
         if (0 == VG_(strcmp)(segcmd->segname, "__LINKEDIT")) {
           continue;
+        }
+
+        // Faulting address: 0x7FFF7FFD5F40
+        // Faulting address: 0x7FFF7FFD42A0
+        if ((Addr) dyld_cache.header + segcmd->fileoff + segcmd->filesize > 0x7FFF7FFD0000) {
+          VG_(dmsg)("WHY ISN'T IT WORKING??: %s\n", path);
+          return;
         }
 
         VG_(memcpy)((void*) (macho_map + offset), (const void*) ((Addr) dyld_cache.header + segcmd->fileoff), segcmd->filesize);
@@ -710,56 +720,58 @@ static void track_macho_file(const HChar * path, Addr addr) {
         struct symtab_command *symtab = (struct symtab_command *) lc;
 
         const struct NLIST* s = 0;
-        const struct NLIST* syms_start = (struct NLIST*) ((Addr) dyld_cache.header + symtab->symoff);
+        const struct NLIST* syms_start = (struct NLIST*) ((Addr) linkEditBase + symtab->symoff);
         const struct NLIST* syms_end = &syms_start[symtab->nsyms];
-        const char* strings_start = (const char*) ((Addr) dyld_cache.header + symtab->stroff);
+        const char* strings_start = (const char*) ((Addr) linkEditBase + symtab->stroff);
         const char* strings_end = &strings_start[symtab->strsize];
 
-        Addr syms_offset = macho_map + le_offset;
+        // FIXME: why is linkEditBase working but not the dyld way: dyld_cache.header + symtab->symoff?
+        // VG_(debugLog)(3, "dyld_cache", "syms: %#lx -> %p + %#lx (sl: %#lx) vs %#lx -> %#lx + %#lx\n", (Addr) dyld_cache.header + symtab->symoff, dyld_cache.header, symtab->symoff, dyld_cache.slide, linkEditBase + symtab->symoff, linkEditBase, symtab->symoff);
+
+        Addr syms_offset = macho_map + seg_edit->fileoff + le_offset;
         struct NLIST* sym_index = (struct NLIST*) syms_offset;
 
         Addr strpool_offset = syms_offset + syms_count * sizeof(struct NLIST);
         SizeT str_offset = 1;
         VG_(memset)((void *) strpool_offset, '\0', strpool_size);
-        VG_(debugLog)(3, "dyld_cache", "syms_start\n");
+
+        VG_(debugLog)(4, "dyld_cache", "copying SYMTAB(symbols) to %llx (%d bytes)\n", seg_edit->fileoff + le_offset, syms_count * sizeof(struct NLIST));
+        VG_(debugLog)(4, "dyld_cache", "copying SYMTAB(strings) to %llx (%d bytes)\n", seg_edit->fileoff + le_offset + syms_count * sizeof(struct NLIST), strpool_size);
 
         for (s = syms_start; s != syms_end; ++s) {
-          VG_(debugLog)(3, "dyld_cache", "loop: %p\n", s);
           if (local_nlists != NULL && (s->n_type & (N_TYPE|N_EXT)) == N_SECT) {
             continue;
           }
-          VG_(debugLog)(3, "dyld_cache", "/if\n");
+          if ((Addr) sym_index >= strpool_offset) {
+            VG_(dmsg)("bad executable (invalid symbols): %s\n", path);
+            return;
+          }
 
           VG_(memcpy)(sym_index, s, sizeof(*s));
           sym_index->n_un.n_strx = str_offset;
-          VG_(debugLog)(3, "dyld_cache", "copied\n");
 
           SizeT len = 0;
           const char* symName = &strings_start[s->n_un.n_strx];
           if (symName > strings_end) {
             symName = "<corrupt symbol name>";
           }
-          VG_(debugLog)(3, "dyld_cache", "sym\n");
           len = VG_(strlen)(symName) + 1;
           if (str_offset + len > strpool_size) {
             VG_(dmsg)("bad executable (invalid strings): %s\n", path);
             return;
           }
-          VG_(debugLog)(3, "dyld_cache", "oooocppyy\n");
+          VG_(debugLog)(4, "dyld_cache", "found symbol: %s\n", symName);
           VG_(memcpy)((void *) (strpool_offset + str_offset), symName, len);
-          VG_(debugLog)(3, "dyld_cache", "'d\n");
           str_offset += len;
-            VG_(debugLog)(3, "dyld_cache", "inc\n");
           ++sym_index;
+        }
+
+        for (j = 0; j < local_nlists_size; ++j) {
           if ((Addr) sym_index >= strpool_offset) {
             VG_(dmsg)("bad executable (invalid symbols): %s\n", path);
             return;
           }
-            VG_(debugLog)(3, "dyld_cache", "done\n");
-        }
-        VG_(debugLog)(3, "dyld_cache", "local_nlists_size\n");
 
-        for (j = 0; j < local_nlists_size; ++j) {
           VG_(memcpy)(sym_index, &local_nlists[j], sizeof(*local_nlists));
           sym_index->n_un.n_strx = str_offset;
 
@@ -772,26 +784,20 @@ static void track_macho_file(const HChar * path, Addr addr) {
             VG_(dmsg)("bad executable (invalid strings): %s\n", path);
             return;
           }
+          VG_(debugLog)(4, "dyld_cache", "found local symbol: %s\n", localName);
           VG_(memcpy)((void *) (strpool_offset + str_offset), localName, len);
           str_offset += len;
           ++sym_index;
-          if ((Addr) sym_index >= strpool_offset) {
-            VG_(dmsg)("bad executable (invalid symbols): %s\n", path);
-            return;
-          }
         }
 
-        VG_(debugLog)(3, "dyld_cache", "SYMTAB\n");
-
-        symtab->symoff = syms_offset;
+        symtab->symoff = syms_offset - macho_map;
         symtab->nsyms = syms_count;
-        symtab->stroff = strpool_offset;
+        symtab->stroff = strpool_offset - macho_map;
         symtab->strsize = strpool_size;
         seg_edit->filesize = symtab->stroff + symtab->strsize - seg_edit->fileoff;
         seg_edit->vmsize = (seg_edit->filesize + 4095) & (-4096); // FIXME: VG_ROUNDUP?
 
         le_offset += syms_count * sizeof(struct NLIST) + strpool_size;
-        VG_(debugLog)(3, "dyld_cache", "END\n");
         break;
 
       case LC_DYSYMTAB:
@@ -891,11 +897,13 @@ static void track_macho_file(const HChar * path, Addr addr) {
     // FIXME: finish exports symbols
     // VG_(free)(exports);
 
-    // TODO: DEBUG REMOVE
-    VG_(debugLog)(3, "dyld_cache", "writing debug...\n");
-    SysRes res = VG_(open)("./fake.dylib", VKI_O_CREAT|VKI_O_WRONLY|VKI_O_TRUNC, VKI_S_IRUSR|VKI_S_IWUSR);
-    VG_(write)(sr_Res(res), (void*) macho_map, size);
-    VG_(exit)(1);
+    // Can be used to debug if the image is properly relocated
+    if (0) {
+      VG_(debugLog)(3, "dyld_cache", "writing debug...\n");
+      SysRes res = VG_(open)("./debug.dylib", VKI_O_CREAT|VKI_O_WRONLY|VKI_O_TRUNC, VKI_S_IRUSR|VKI_S_IWUSR);
+      VG_(write)(sr_Res(res), (void*) macho_map, size);
+      // VG_(exit)(1);
+    }
   }
 
   if (seg_text == 0 || seg_data == 0) {
