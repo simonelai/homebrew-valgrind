@@ -1422,9 +1422,11 @@ ULong VG_(di_notify_mmap_in_memory)( const HChar * filename,
       create one. */
    di = find_or_create_DebugInfo_for( filename );
    vg_assert(di);
+#if DARWIN_VERS >= DARWIN_11_00
    // TODO: can't find a better way to pass it and set it everytime...
    di->fsm.addr = header;
    di->fsm.size = header_size;
+#endif
 
    if (di->have_dinfo) {
       if (debug)

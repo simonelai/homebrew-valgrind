@@ -43,6 +43,8 @@
 #include "pub_tool_libcprint.h"             // VG_(dmsg)
 #include "pub_tool_libcfile.h"              // VG_(stat)
 #include "pub_tool_mallocfree.h"            // VG_(malloc)(), VG_(free)()
+#include "pub_core_transtab.h"              // VG_(discard_translations)
+#include "pub_core_tooliface.h"             // VG_TRACK
 #include "vki/vki-scnums-darwin.h"          // __NR_shared_region_check_np
 #include "priv_dyld_internals.h"            // CACHE_MAGIC_*, dyld_cache_header
 
@@ -92,6 +94,118 @@ static DYLDCache dyld_cache = {
 //  * `ImageArray`/`Image`/`TypedBytes` in `dyld-*/dyld3/Closure.cpp`
 //  * `cacheablePath` in `dyld-*/src/dyld.cpp`
 
+// Sometimes we need to trigger the same behavior has mmap on non-mmap'd regions
+// e.g. the trie inside the dyld cache which we want to mark as readable to avoid warnings
+// Technically only does `notify_tool_of_mmap` at the moment
+static void lenient_notify_core_and_tool_of_mmap(
+  Addr a, SizeT len, UInt prot,
+  UInt flags, Int fd, Off64T offset
+) {
+  Bool rr, ww, xx;
+
+  len = VG_PGROUNDUP(len);
+
+  rr = toBool(prot & VKI_PROT_READ);
+  ww = toBool(prot & VKI_PROT_WRITE);
+  xx = toBool(prot & VKI_PROT_EXEC);
+  VG_TRACK( new_mem_mmap, a, len, rr, ww, xx, 0 );
+}
+
+static void output_debug_info() {
+  VG_(debugLog)(4, "dyld_cache",
+    "shared dyld content: {\n"
+    "  .magic: %s,\n"
+    "  .mappingOffset: %#x,\n"
+    "  .mappingCount: %u,\n"
+    "  .imagesOffset: %#x,\n"
+    "  .imagesCount: %u,\n"
+    "  .dyldBaseAddress: %#llx,\n"
+    "  .codeSignatureOffset: %#llx,\n"
+    "  .codeSignatureSize: %llu,\n"
+    "  .slideInfoOffset: %#llx,\n"
+    "  .slideInfoSize: %llu,\n"
+    "  .localSymbolsOffset: %#llx,\n"
+    "  .localSymbolsSize: %llu,\n"
+    "  .cacheType: %llu,\n"
+    "  .branchPoolsOffset: %#x,\n"
+    "  .branchPoolsCount: %u,\n"
+    "  .accelerateInfoAddr: %#llx,\n"
+    "  .accelerateInfoSize: %llu,\n"
+    "  .imagesTextOffset: %#llx,\n"
+    "  .imagesTextCount: %llu,\n"
+    "  .dylibsImageGroupAddr: %#llx,\n"
+    "  .dylibsImageGroupSize: %llu,\n"
+    "  .otherImageGroupAddr: %#llx,\n"
+    "  .otherImageGroupSize: %llu,\n"
+    "  .progClosuresAddr: %#llx,\n"
+    "  .progClosuresSize: %llu,\n"
+    "  .progClosuresTrieAddr: %#llx,\n"
+    "  .progClosuresTrieSize: %llu,\n"
+    "  .platform: %u,\n"
+    "  .formatVersion: %d,\n"
+    "  .dylibsExpectedOnDisk: %d,\n"
+    "  .simulator: %d,\n"
+    "  .locallyBuiltCache: %d,\n"
+    "  .padding: %d,\n"
+    "  .sharedRegionStart: %#llx,\n"
+    "  .sharedRegionSize: %llu,\n"
+    "  .maxSlide: %#llx,\n"
+    "  .dylibsImageArrayAddr: %#llx,\n"
+    "  .dylibsImageArraySize: %llu,\n"
+    "  .dylibsTrieAddr: %#llx,\n"
+    "  .dylibsTrieSize: %llu,\n"
+    "  .otherImageArrayAddr: %#llx,\n"
+    "  .otherImageArraySize: %llu,\n"
+    "  .otherTrieAddr: %#llx,\n"
+    "  .otherTrieSize: %llu,\n"
+    "}\n",
+    dyld_cache.header->magic,
+    dyld_cache.header->mappingOffset,
+    dyld_cache.header->mappingCount,
+    dyld_cache.header->imagesOffset,
+    dyld_cache.header->imagesCount,
+    dyld_cache.header->dyldBaseAddress,
+    dyld_cache.header->codeSignatureOffset,
+    dyld_cache.header->codeSignatureSize,
+    dyld_cache.header->slideInfoOffset,
+    dyld_cache.header->slideInfoSize,
+    dyld_cache.header->localSymbolsOffset,
+    dyld_cache.header->localSymbolsSize,
+    dyld_cache.header->cacheType,
+    dyld_cache.header->branchPoolsOffset,
+    dyld_cache.header->branchPoolsCount,
+    dyld_cache.header->accelerateInfoAddr,
+    dyld_cache.header->accelerateInfoSize,
+    dyld_cache.header->imagesTextOffset,
+    dyld_cache.header->imagesTextCount,
+    dyld_cache.header->dylibsImageGroupAddr,
+    dyld_cache.header->dylibsImageGroupSize,
+    dyld_cache.header->otherImageGroupAddr,
+    dyld_cache.header->otherImageGroupSize,
+    dyld_cache.header->progClosuresAddr,
+    dyld_cache.header->progClosuresSize,
+    dyld_cache.header->progClosuresTrieAddr,
+    dyld_cache.header->progClosuresTrieSize,
+    dyld_cache.header->platform,
+    dyld_cache.header->formatVersion,
+    dyld_cache.header->dylibsExpectedOnDisk,
+    dyld_cache.header->simulator,
+    dyld_cache.header->locallyBuiltCache,
+    dyld_cache.header->padding,
+    dyld_cache.header->sharedRegionStart,
+    dyld_cache.header->sharedRegionSize,
+    dyld_cache.header->maxSlide,
+    dyld_cache.header->dylibsImageArrayAddr,
+    dyld_cache.header->dylibsImageArraySize,
+    dyld_cache.header->dylibsTrieAddr,
+    dyld_cache.header->dylibsTrieSize,
+    dyld_cache.header->otherImageArrayAddr,
+    dyld_cache.header->otherImageArraySize,
+    dyld_cache.header->otherTrieAddr,
+    dyld_cache.header->otherTrieSize
+  );
+}
+
 static int try_to_init(void) {
   Addr cache_address;
   const dyld_cache_header* header;
@@ -111,6 +225,7 @@ static int try_to_init(void) {
   dyld_cache.header = header;
   VG_(debugLog)(2, "dyld_cache", "shared dyld cache found: %#lx\n", (Addr) dyld_cache.header);
   VG_(debugLog)(2, "dyld_cache", "shared dyld cache format: %d\n", dyld_cache.header->formatVersion);
+  output_debug_info();
 
   // Mark the header itself
   ML_(notify_core_and_tool_of_mmap)(
@@ -119,63 +234,79 @@ static int try_to_init(void) {
   );
 
   // Mark the mappings
-  // FIXME: not aligned
-  // ML_(notify_core_and_tool_of_mmap)(
-  //   cache_address + dyld_cache.header->mappingOffset,
-  //   sizeof(dyld_cache_mapping_info) * dyld_cache.header->mappingCount,
-  //   VKI_PROT_READ, VKI_MAP_ANON, -1, 0
-  // );
+  // not aligned
+  lenient_notify_core_and_tool_of_mmap(
+    cache_address + dyld_cache.header->mappingOffset,
+    sizeof(dyld_cache_mapping_info) * dyld_cache.header->mappingCount,
+    VKI_PROT_READ, VKI_MAP_ANON, -1, 0
+  );
 
   vg_assert(dyld_cache.header->mappingCount == 3);
 
   dyld_cache.mappings = (const dyld_cache_mapping_info*)(cache_address + dyld_cache.header->mappingOffset);
   dyld_cache.slide = cache_address - (Addr)dyld_cache.mappings[0].address;
 
+  for (int i = 0; i < dyld_cache.header->mappingCount; ++i) {
+    VG_(debugLog)(4, "dyld_cache",
+      "mapping[%d]{"
+      "  .address: %#llx,\n"
+      "  .size: %llu,\n"
+      "  .fileOffset: %#llx,\n"
+      "  .maxProt: %#x,\n"
+      "  .initProt: %#x,\n"
+      "}\n",
+      i,
+      dyld_cache.mappings[i].address,
+      dyld_cache.mappings[i].size,
+      dyld_cache.mappings[i].fileOffset,
+      dyld_cache.mappings[i].maxProt,
+      dyld_cache.mappings[i].initProt
+    );
+  }
+
   // FIXME: too big
-  // ML_(notify_core_and_tool_of_mmap)(
+  // lenient_notify_core_and_tool_of_mmap(
   //   dyld_cache.mappings[0].address, dyld_cache.mappings[0].size,
   //   VKI_PROT_READ | VKI_PROT_EXEC, VKI_MAP_ANON, -1, 0
   // );
-
-  // FIXME: why not?
-  // ML_(notify_core_and_tool_of_mmap)(
-  //   dyld_cache.mappings[1].address, dyld_cache.mappings[1].size,
-  //   VKI_PROT_READ | VKI_PROT_WRITE, VKI_MAP_ANON, -1, 0
-  // );
-
-  // FIXME: too big
-  // ML_(notify_core_and_tool_of_mmap)(
+  lenient_notify_core_and_tool_of_mmap(
+    dyld_cache.mappings[1].address, dyld_cache.mappings[1].size,
+    VKI_PROT_READ | VKI_PROT_WRITE, VKI_MAP_ANON, -1, 0
+  );
+  // lenient_notify_core_and_tool_of_mmap(
   //   dyld_cache.mappings[2].address, dyld_cache.mappings[2].size,
   //   VKI_PROT_READ, VKI_MAP_ANON, -1, 0
   // );
 
   // Mark the images
-  // FIXME: not aligned
-  // ML_(notify_core_and_tool_of_mmap)(
-  //   cache_address + dyld_cache.header->imagesOffset,
-  //   sizeof(dyld_cache_image_info) * dyld_cache.header->imagesCount,
-  //   VKI_PROT_READ, VKI_MAP_ANON, -1, 0
-  // );
+  // not aligned
+  lenient_notify_core_and_tool_of_mmap(
+    cache_address + dyld_cache.header->imagesOffset,
+    sizeof(dyld_cache_image_info) * dyld_cache.header->imagesCount,
+    VKI_PROT_READ, VKI_MAP_ANON, -1, 0
+  );
+
+  //0x7fff800320ac
 
   dyld_cache.has_image_array = dyld_cache.header->mappingOffset >= 0x100 && dyld_cache.header->dylibsImageArrayAddr != 0;
   dyld_cache.images_old = (const dyld_cache_image_info*)(cache_address + dyld_cache.header->imagesOffset);
   if (dyld_cache.has_image_array) {
     dyld_cache.images_new = (const DyldImageArray*)(cache_address + (dyld_cache.header->dylibsImageArrayAddr - dyld_cache.mappings[0].address));
 
-    // FIXME: why not?
-    // ML_(notify_core_and_tool_of_mmap)(
-    //   (Addr)dyld_cache.images_new,
-    //   sizeof(DyldTypedBytes) + dyld_cache.images_new->payloadLength,
-    //   VKI_PROT_READ, VKI_MAP_ANON, -1, 0
-    // );
+    // not aligned
+    lenient_notify_core_and_tool_of_mmap(
+      (Addr)dyld_cache.images_new,
+      sizeof(DyldTypedBytes) + dyld_cache.images_new->payloadLength,
+      VKI_PROT_READ, VKI_MAP_ANON, -1, 0
+    );
 
     if (dyld_cache.mappings[0].fileOffset == 0 && dyld_cache.header->mappingOffset >= 0x118) {
-      // FIXME: not aligned
-      // ML_(notify_core_and_tool_of_mmap)(
-      //   (Addr)dyld_cache.header->dylibsTrieAddr + dyld_cache.slide,
-      //   dyld_cache.header->dylibsTrieSize,
-      //   VKI_PROT_READ, VKI_MAP_ANON, -1, 0
-      // );
+      // not aligned
+      lenient_notify_core_and_tool_of_mmap(
+        (Addr)dyld_cache.header->dylibsTrieAddr + dyld_cache.slide,
+        dyld_cache.header->dylibsTrieSize,
+        VKI_PROT_READ, VKI_MAP_ANON, -1, 0
+      );
     }
   }
 
@@ -184,6 +315,12 @@ static int try_to_init(void) {
     dyld_cache.local_syms_entries = (const dyld_cache_local_symbols_entry*) ((Addr) dyld_cache.local_syms_info + dyld_cache.local_syms_info->entriesOffset);
     dyld_cache.local_nlists = (const struct NLIST*) ((Addr) dyld_cache.local_syms_info + dyld_cache.local_syms_info->nlistOffset);
     dyld_cache.local_strings = (const char*) ((Addr) dyld_cache.local_syms_info + dyld_cache.local_syms_info->stringsOffset);
+
+    lenient_notify_core_and_tool_of_mmap(
+      (Addr)dyld_cache.local_syms_info,
+      dyld_cache.header->localSymbolsSize,
+      VKI_PROT_READ, VKI_MAP_ANON, -1, 0
+    );
   }
 
   // TODO: mark the rest of the structure as accessible?
@@ -735,8 +872,8 @@ static void track_macho_file(const HChar * path, Addr addr) {
         SizeT str_offset = 1;
         VG_(memset)((void *) strpool_offset, '\0', strpool_size);
 
-        VG_(debugLog)(4, "dyld_cache", "copying SYMTAB(symbols) to %llx (%d bytes)\n", seg_edit->fileoff + le_offset, syms_count * sizeof(struct NLIST));
-        VG_(debugLog)(4, "dyld_cache", "copying SYMTAB(strings) to %llx (%d bytes)\n", seg_edit->fileoff + le_offset + syms_count * sizeof(struct NLIST), strpool_size);
+        VG_(debugLog)(4, "dyld_cache", "copying SYMTAB(symbols) to %llx (%lu bytes)\n", seg_edit->fileoff + le_offset, syms_count * sizeof(struct NLIST));
+        VG_(debugLog)(4, "dyld_cache", "copying SYMTAB(strings) to %llx (%lu bytes)\n", seg_edit->fileoff + le_offset + syms_count * sizeof(struct NLIST), strpool_size);
 
         for (s = syms_start; s != syms_end; ++s) {
           if (local_nlists != NULL && (s->n_type & (N_TYPE|N_EXT)) == N_SECT) {
@@ -898,11 +1035,13 @@ static void track_macho_file(const HChar * path, Addr addr) {
     // VG_(free)(exports);
 
     // Can be used to debug if the image is properly relocated
-    if (0) {
+    if (1) {
       VG_(debugLog)(3, "dyld_cache", "writing debug...\n");
       SysRes res = VG_(open)("./debug.dylib", VKI_O_CREAT|VKI_O_WRONLY|VKI_O_TRUNC, VKI_S_IRUSR|VKI_S_IWUSR);
       VG_(write)(sr_Res(res), (void*) macho_map, size);
-      // VG_(exit)(1);
+      if (1) {
+        VG_(exit)(1);
+      }
     }
   }
 
