@@ -7695,6 +7695,13 @@ PRE(thread_terminate)
             False/*success*/, 0, 0
          )
       );
+#elif defined(VGA_arm64)
+       SET_STATUS_from_SysRes(
+         VG_(mk_SysRes_arm64_darwin)(
+            VG_DARWIN_SYSCALL_CLASS_MACH,
+            False/*success*/, 0, 0
+         )
+      );
 #else
 #error unknown architecture
 #endif
@@ -9307,6 +9314,29 @@ PRE(sigreturn)
    machine-dependent traps
    ------------------------------------------------------------------ */
 
+
+#if defined(VGA_arm64)
+PRE(thread_set_cthread_self)
+{
+  PRINT("thread_set_cthread_self ( %#lx )", ARG1);
+  PRE_REG_READ1(void, "thread_set_cthread_self", struct pthread_t *, self);
+
+  {
+    ThreadState *tst = VG_(get_ThreadState)(tid);
+    tst->os_state.pthread = ARG1;
+    // SET_STATUS_Success(0x60);
+    // see comments on x86 case just above
+    SET_STATUS_from_SysRes(
+        VG_(mk_SysRes_arm64_darwin)(
+          VG_DARWIN_SYSNO_CLASS(__NR_thread_set_cthread_self),
+          False, 0, 0x60
+        )
+    );
+  }
+}
+
+#elif defined(VGA_x86) || defined(VGA_amd64)
+
 #if defined(VGA_x86)
 static VexGuestX86SegDescr* alloc_zeroed_x86_LDT ( void )
 {
@@ -9374,11 +9404,11 @@ PRE(thread_fast_set_cthread_self)
          )
       );
    }
-
+#endif
+}
 #else
 #error unknown architecture
 #endif
-}
 
 
 /* ---------------------------------------------------------------------
@@ -9504,7 +9534,7 @@ POST(audit_session_self)
 PRE(fgetattrlist)
 {
    PRINT("fgetattrlist(%ld, %#lx, %#lx, %lu, %lu)",
-         ARG1, (HChar *)ARG1, ARG2, ARG3, ARG4, ARG5);
+         ARG1, ARG2, ARG3, ARG4, ARG5);
    PRE_REG_READ5(int, "fgetattrlist",
                  int,fd, struct vki_attrlist *,attrList,
                  void *,attrBuf, vki_size_t,attrBufSize, unsigned int,options);
@@ -11620,17 +11650,17 @@ const SyscallTableEntry ML_(mach_trap_table)[] = {
 // calling convention instead of the syscall convention.
 // Use ML_(mdep_trap_table)[syscallno - ML_(mdep_trap_base)] .
 
+const SyscallTableEntry ML_(mdep_trap_table)[] = {
 #if defined(VGA_x86)
-const SyscallTableEntry ML_(mdep_trap_table)[] = {
    MACX_(__NR_thread_fast_set_cthread_self, thread_fast_set_cthread_self),
-};
 #elif defined(VGA_amd64)
-const SyscallTableEntry ML_(mdep_trap_table)[] = {
    MACX_(__NR_thread_fast_set_cthread_self, thread_fast_set_cthread_self),
-};
+#elif defined(VGA_arm64)
+   MACX_(__NR_thread_set_cthread_self, thread_set_cthread_self),
 #else
 #error unknown architecture
 #endif
+};
 
 const UInt ML_(syscall_table_size) =
             sizeof(ML_(syscall_table)) / sizeof(ML_(syscall_table)[0]);

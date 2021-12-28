@@ -811,7 +811,13 @@ DECL_TEMPLATE(darwin, kernelrpc_mach_port_request_notification_trap);
 #endif /* DARWIN_VERS >= DARWIN_10_15 */
 
 // Machine-dependent traps
+#if defined(VGA_arm64)
+DECL_TEMPLATE(darwin, thread_set_cthread_self);
+#elif defined(VGA_x86) || defined(VGA_amd64)
 DECL_TEMPLATE(darwin, thread_fast_set_cthread_self);
+#else
+#error unknown architecture
+#endif
 
 // syswrap-<arch>-darwin.c
 #include <mach/mach.h>
