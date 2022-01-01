@@ -90,7 +90,7 @@
    SVMA to zero.  Seems to work and have no obvious bad side effects.
 */
 
-#define DEBUGPRINTING 0
+#define DEBUGPRINTING 1
 
 #include <assert.h>
 #include <stdlib.h>
@@ -280,7 +280,7 @@ static Int map_image_aboard ( /*OUT*/ImageInfo* ii, HChar* filename )
    { struct fat_header*  fh_be;
      struct fat_header   fh;
      struct mach_header_64* mh;
-     
+
      // Assume initially that we have a thin image, and update
      // these if it turns out to be fat.
      ii->macho_img     = ii->img;
@@ -303,7 +303,7 @@ static Int map_image_aboard ( /*OUT*/ImageInfo* ii, HChar* filename )
                           + fh.nfat_arch * sizeof(struct fat_arch))
            fail("Invalid Mach-O file (1 too small).");
 
-        for (f = 0, arch_be = (struct fat_arch *)(fh_be+1); 
+        for (f = 0, arch_be = (struct fat_arch *)(fh_be+1);
              f < fh.nfat_arch;
              f++, arch_be++) {
            Int cputype;
@@ -312,7 +312,7 @@ static Int map_image_aboard ( /*OUT*/ImageInfo* ii, HChar* filename )
 #          elif defined(PLAT_amd64_darwin)
            cputype = CPU_TYPE_X86_64;
 #          elif defined(PLAT_arm64_darwin)
-           cputype = CPU_TYPE_ARM;
+           cputype = CPU_TYPE_ARM64;
 #          else
 #            error "unknown architecture"
 #          endif
@@ -451,6 +451,42 @@ void modify_macho_loadcmds ( HChar* filename,
                if (DEBUGPRINTING)
                   printf("LC_UNIXTHREAD");
                break;
+#if defined(PLAT_arm64_darwin)
+            // We can't build tool statically on arm64 (XNU forbids loading them)
+            // so we need to allow some DYLD sections
+            case LC_DYLD_INFO_ONLY:
+               if (DEBUGPRINTING)
+                  printf("LC_DYLD_INFO_ONLY");
+               break;
+            case LC_LOAD_DYLINKER:
+               if (DEBUGPRINTING)
+                  printf("LC_LOAD_DYLINKER");
+               break;
+            case LC_BUILD_VERSION:
+               if (DEBUGPRINTING)
+                  printf("LC_BUILD_VERSION");
+               break;
+            case LC_MAIN:
+               if (DEBUGPRINTING)
+                  printf("LC_MAIN");
+               break;
+            case LC_LOAD_DYLIB:
+               if (DEBUGPRINTING)
+                  printf("LC_LOAD_DYLIB");
+               break;
+            case LC_FUNCTION_STARTS:
+               if (DEBUGPRINTING)
+                  printf("LC_FUNCTION_STARTS");
+               break;
+            case LC_DATA_IN_CODE:
+               if (DEBUGPRINTING)
+                  printf("LC_DATA_IN_CODE");
+               break;
+            case LC_CODE_SIGNATURE:
+               if (DEBUGPRINTING)
+                  printf("LC_CODE_SIGNATURE");
+               break;
+#endif
             default:
                if (DEBUGPRINTING)
                   printf("???");
@@ -593,7 +629,7 @@ void modify_macho_loadcmds ( HChar* filename,
    seg__pagezero->vmaddr = 0;
 #  endif
 
-  out:   
+  out:
    if (ii.img)
       unmap_image(&ii);
 }
@@ -630,7 +666,7 @@ int main ( int argc, char** argv )
 
    if (argc != 4)
       fail("args: -stack_addr-arg -stack_size-arg "
-           "name-of-tool-executable-to-modify"); 
+           "name-of-tool-executable-to-modify");
 
    r= sscanf(argv[1], "0x%llx", &req_stack_addr);
    if (r != 1) fail("invalid stack_addr arg");
@@ -645,7 +681,7 @@ int main ( int argc, char** argv )
    if (!is_plausible_tool_exe_name(argv[3]))
       fail("implausible tool exe name -- not of the form *-{x86,amd64,arm64}-darwin");
 
-   fprintf(stderr, "fixup_macho_loadcmds: examining tool exe: %s\n", 
+   fprintf(stderr, "fixup_macho_loadcmds: examining tool exe: %s\n",
            argv[3] );
    modify_macho_loadcmds( argv[3], req_stack_addr - req_stack_size,
                           req_stack_size );
